@@ -1,0 +1,7 @@
+/build
+/output
+/.vscode
+.directory
+/.cache
+/fdock_cpu
+

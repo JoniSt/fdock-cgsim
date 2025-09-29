@@ -1,0 +1,7 @@
+fdock_cpu should be called as follows: fdock_cpu -ffile 1hvr_vegl.maps.fld -lfile 1hvrl.pdbqt -nev 2500000 -nrun 10
+
+All the input files are supposed to be in the current directory.
+This is a typical docking run but it takes some time. Run time can be shortened by lowering -nev value (number of energy evaluations) (e. g. to 250000). 
+
+Suggested call for the FF+OCL version:
+eMD_ffgpu1 -ffile 1hvr_vegl.maps.fld -lfile 1hvrl.pdbqt -nrun 1 -lsrat 0 -psize 5000 -ngen 20 -nev 2500000
