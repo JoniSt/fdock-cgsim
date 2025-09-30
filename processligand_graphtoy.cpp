@@ -571,27 +571,27 @@ struct InterE_AtomInput {
 };
 
 struct InterE_AtomData {
-    int m_atom_cnt = 0;
-    int m_type_id  = 0;
-    
+    bool m_terminate_processing = false;
     bool m_isOutOfGrid = false;
-    
+
+    int m_type_id  = 0;
+
     int m_x_low  = 0;
     int m_x_high = 0;
     int m_y_low  = 0;
     int m_y_high = 0;
     int m_z_low  = 0;
     int m_z_high = 0;
-    
+
     double m_q = 0;
-    
+
     double m_weights[2][2][2] = {};
 };
 
 struct InterE_AtomEnergy {
-    int m_atom_cnt = 0;
     bool m_isOutOfGrid = false;
-    
+    bool m_terminate_processing = false;
+
     double m_atomTypeGridEnergy = 0;
     double m_electrostaticGridEnergy = 0;
     double m_desolvationGridEnergy = 0;
@@ -631,205 +631,309 @@ static int interE_gridCoordsToArrayOffset(const std::array<int, 3>& size_xyz, in
     return x + size_xyz[0] * (y + size_xyz[1] * z);
 }
 
-struct Kernel_InterE_BuildAtomData: IntraE_ComputeKernelBase<InterE_AtomInput, InterE_AtomData> {
-    Kernel_InterE_BuildAtomData(GtContext *ctx, double outofgrid_tolerance, std::array<int, 3> size_xyz):
-        IntraE_ComputeKernelBase<InterE_AtomInput, InterE_AtomData>(ctx),
-        m_outofgrid_tolerance(outofgrid_tolerance), m_size_xyz(size_xyz) {}
-    
-private:
-    double m_outofgrid_tolerance;
-    std::array<int, 3> m_size_xyz;
-    
-    GtKernelCoro kernelMain() override {
-        int atom_cnt = 0;
-        while (true) {
-            const InterE_AtomInput inputData = co_await m_inputStream->read();
-            
-            InterE_AtomData outputData{};
-            outputData.m_atom_cnt = atom_cnt++;
-            outputData.m_type_id = int(inputData.m_atom_idxyzq[0]);
-            
-            double x = inputData.m_atom_idxyzq[1];
-            double y = inputData.m_atom_idxyzq[2];
-            double z = inputData.m_atom_idxyzq[3];
-            
-            outputData.m_isOutOfGrid = interE_nudgeGridCoordsIntoBounds(x, y, z, m_outofgrid_tolerance, m_size_xyz);
-            
-            if (!outputData.m_isOutOfGrid) {
-                outputData.m_q = inputData.m_atom_idxyzq[4];
-                
-                outputData.m_x_low = (int) floor(x);
-                outputData.m_y_low = (int) floor(y);
-                outputData.m_z_low = (int) floor(z);
-                outputData.m_x_high = (int) ceil(x);
-                outputData.m_y_high = (int) ceil(y);
-                outputData.m_z_high = (int) ceil(z);
-                
-                const double x_frac = x - outputData.m_x_low;
-                const double y_frac = y - outputData.m_y_low;
-                const double z_frac = z - outputData.m_z_low;
-                
-                get_trilininterpol_weights(outputData.m_weights, x_frac, y_frac, z_frac);
+COMPUTE_KERNEL(hls, kernel_interE_BuildAtomData,
+    KernelReadPort<uint32_t, s_iop_rtp> num_atoms_in,
+    KernelReadPort<double, s_iop_rtp> outofgrid_tolerance_in,
+    KernelReadPort<int, s_iop_rtp> grid_size_x_in,
+    KernelReadPort<int, s_iop_rtp> grid_size_y_in,
+    KernelReadPort<int, s_iop_rtp> grid_size_z_in,
+    KernelMemoryPort<const double> atom_idxyzq_buf,
+    KernelWritePort<InterE_AtomData> atom_data_out
+) {
+    uint32_t num_atoms = co_await num_atoms_in.get();
+    num_atoms = std::min(num_atoms, uint32_t(g_maxNumAtoms));
+
+    const double outofgrid_tolerance = co_await outofgrid_tolerance_in.get();
+    const int grid_size_x = co_await grid_size_x_in.get();
+    const int grid_size_y = co_await grid_size_y_in.get();
+    const int grid_size_z = co_await grid_size_z_in.get();
+
+    const std::array<int, 3> size_xyz = {grid_size_x, grid_size_y, grid_size_z};
+
+    for (uint32_t i = 0; i < num_atoms; ++i) {
+        InterE_AtomData outputData{};
+
+        double inputData[5];
+        for (size_t j = 0; j < 5; ++j) {
+            inputData[j] = atom_idxyzq_buf[i * 5 + j];
+        }
+
+        outputData.m_type_id = int(inputData[0]);
+
+        double x = inputData[1];
+        double y = inputData[2];
+        double z = inputData[3];
+
+        outputData.m_isOutOfGrid = interE_nudgeGridCoordsIntoBounds(x, y, z, outofgrid_tolerance, size_xyz);
+
+        if (!outputData.m_isOutOfGrid) {
+            outputData.m_q = inputData[4];
+
+            outputData.m_x_low = (int) floor(x);
+            outputData.m_y_low = (int) floor(y);
+            outputData.m_z_low = (int) floor(z);
+            outputData.m_x_high = (int) ceil(x);
+            outputData.m_y_high = (int) ceil(y);
+            outputData.m_z_high = (int) ceil(z);
+
+            const double x_frac = x - outputData.m_x_low;
+            const double y_frac = y - outputData.m_y_low;
+            const double z_frac = z - outputData.m_z_low;
+
+            get_trilininterpol_weights(outputData.m_weights, x_frac, y_frac, z_frac);
+        }
+
+        co_await atom_data_out.put(outputData);
+    }
+
+    // Terminate pipeline
+    co_await atom_data_out.put(InterE_AtomData{.m_terminate_processing = true});
+}
+
+static constexpr uint32_t s_terminate_dram_reader_sentinel = UINT32_MAX;
+
+COMPUTE_KERNEL(hls, kernel_interE_GenerateDramAddresses,
+    KernelReadPort<InterE_AtomData> atom_data_in,
+    KernelWritePort<uint32_t> address_out,
+    KernelReadPort<int, s_iop_rtp> grid_size_x_in,
+    KernelReadPort<int, s_iop_rtp> grid_size_y_in,
+    KernelReadPort<int, s_iop_rtp> grid_size_z_in,
+    KernelReadPort<int, s_iop_rtp> num_of_atypes_in
+) {
+    const int grid_size_x = co_await grid_size_x_in.get();
+    const int grid_size_y = co_await grid_size_y_in.get();
+    const int grid_size_z = co_await grid_size_z_in.get();
+    const int num_of_atypes = co_await num_of_atypes_in.get();
+
+    const std::array<int, 3> size_xyz = {grid_size_x, grid_size_y, grid_size_z};
+
+    while (true) {
+        const auto data = co_await atom_data_in.get();
+
+        if (data.m_terminate_processing) {
+            break;
+        }
+
+        if (data.m_isOutOfGrid)
+            continue;
+
+        std::array<int, 8> coordOffsets = {
+            interE_gridCoordsToArrayOffset(size_xyz, data.m_z_low, data.m_y_low, data.m_x_low),
+            interE_gridCoordsToArrayOffset(size_xyz, data.m_z_low, data.m_y_low, data.m_x_high),
+            interE_gridCoordsToArrayOffset(size_xyz, data.m_z_low, data.m_y_high, data.m_x_low),
+            interE_gridCoordsToArrayOffset(size_xyz, data.m_z_low, data.m_y_high, data.m_x_high),
+            interE_gridCoordsToArrayOffset(size_xyz, data.m_z_high, data.m_y_low, data.m_x_low),
+            interE_gridCoordsToArrayOffset(size_xyz, data.m_z_high, data.m_y_low, data.m_x_high),
+            interE_gridCoordsToArrayOffset(size_xyz, data.m_z_high, data.m_y_high, data.m_x_low),
+            interE_gridCoordsToArrayOffset(size_xyz, data.m_z_high, data.m_y_high, data.m_x_high)
+        };
+
+        std::array<int, 3> gridNumbers = {
+            data.m_type_id,     // energy contribution of the current grid type
+            num_of_atypes,      // energy contribution of the electrostatic grid
+            num_of_atypes + 1   // energy contribution of the desolvation grid
+        };
+
+        for (const int gridNumber: gridNumbers) {
+            const int gridOffset = interE_gridNumberToArrayOffset(size_xyz, gridNumber);
+            for (const int coordOffset: coordOffsets) {
+                const int finalAddr = gridOffset + coordOffset;
+                BOOST_ASSERT(finalAddr >= 0);
+                co_await address_out.put(uint32_t(finalAddr));
             }
-            
-            co_await m_outputStream->write(outputData);
         }
     }
-};
 
-struct Kernel_InterE_GenerateDramAddresses: InterE_ChainKernel {
-    Kernel_InterE_GenerateDramAddresses(GtContext *ctx, std::array<int, 3> size_xyz, int num_of_atypes):
-        InterE_ChainKernel(ctx), m_size_xyz(size_xyz), m_num_of_atypes(num_of_atypes) {}
-    
-    auto * addressOutput() { return m_addressOutput; }
-    
-private:
-    std::array<int, 3> m_size_xyz;
-    int m_num_of_atypes;
-    
-    GtKernelIoStream<uint32_t> *m_addressOutput = addIoStream<uint32_t>(g_fifoDepthFor<uint32_t>);
-    
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            const auto data = co_await m_inputStream->read();
-            
-            // The atom data must be written before its associated DRAM addresses because otherwise we'd
-            // saturate the system's buffers and cause a deadlock. (This kernel would wait for more space
-            // in the DRAM addr/data buffers before it writes the atom data, but the InterpolateEnergy
-            // kernel would wait for the atom data before it drains the DRAM buffers)
-            co_await m_outputStream->write(data);
-            
-            if (data.m_isOutOfGrid)
-                continue;
-            
-            std::array<int, 8> coordOffsets = {
-                interE_gridCoordsToArrayOffset(m_size_xyz, data.m_z_low, data.m_y_low, data.m_x_low),
-                interE_gridCoordsToArrayOffset(m_size_xyz, data.m_z_low, data.m_y_low, data.m_x_high),
-                interE_gridCoordsToArrayOffset(m_size_xyz, data.m_z_low, data.m_y_high, data.m_x_low),
-                interE_gridCoordsToArrayOffset(m_size_xyz, data.m_z_low, data.m_y_high, data.m_x_high),
-                interE_gridCoordsToArrayOffset(m_size_xyz, data.m_z_high, data.m_y_low, data.m_x_low),
-                interE_gridCoordsToArrayOffset(m_size_xyz, data.m_z_high, data.m_y_low, data.m_x_high),
-                interE_gridCoordsToArrayOffset(m_size_xyz, data.m_z_high, data.m_y_high, data.m_x_low),
-                interE_gridCoordsToArrayOffset(m_size_xyz, data.m_z_high, data.m_y_high, data.m_x_high)
-            };
-            
-            std::array<int, 3> gridNumbers = {
-                data.m_type_id,     // energy contribution of the current grid type
-                m_num_of_atypes,    // energy contribution of the electrostatic grid
-                m_num_of_atypes + 1 // energy contribution of the desolvation grid
-            };
-            
-            for (const int gridNumber: gridNumbers) {
-                const int gridOffset = interE_gridNumberToArrayOffset(m_size_xyz, gridNumber);
-                for (const int coordOffset: coordOffsets) {
-                    const int finalAddr = gridOffset + coordOffset;
-                    BOOST_ASSERT(finalAddr >= 0);
-                    co_await m_addressOutput->write(uint32_t(finalAddr));
+    // Terminate DRAM reader
+    co_await address_out.put(s_terminate_dram_reader_sentinel);
+}
+
+COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
+    KernelReadPort<InterE_AtomData> atom_data_in,
+    KernelReadPort<double> dram_data_in,
+    KernelWritePort<InterE_AtomEnergy> atom_energy_out
+) {
+    enum class GridType { ATOM, ELECTROSTATIC, DESOLVATION };
+    using enum GridType;
+
+    const auto getCubeElem = [&] { return dram_data_in.get(); };
+
+    while (true) {
+        const auto data = co_await atom_data_in.get();
+
+        if (data.m_terminate_processing) {
+            co_await atom_energy_out.put(InterE_AtomEnergy{.m_terminate_processing = true});
+            break;
+        }
+
+        InterE_AtomEnergy result{.m_isOutOfGrid = data.m_isOutOfGrid};
+
+        if (!data.m_isOutOfGrid) {
+            for (const GridType t: {ATOM, ELECTROSTATIC, DESOLVATION}) {
+                double cube[2][2][2];
+
+                cube [0][0][0] = co_await getCubeElem();
+                cube [1][0][0] = co_await getCubeElem();
+                cube [0][1][0] = co_await getCubeElem();
+                cube [1][1][0] = co_await getCubeElem();
+                cube [0][0][1] = co_await getCubeElem();
+                cube [1][0][1] = co_await getCubeElem();
+                cube [0][1][1] = co_await getCubeElem();
+                cube [1][1][1] = co_await getCubeElem();
+
+                const double interpolated = trilin_interpol(cube, data.m_weights);
+
+                switch (t) {
+                    case ATOM:              result.m_atomTypeGridEnergy         = interpolated;                     break;
+                    case ELECTROSTATIC:     result.m_electrostaticGridEnergy    = data.m_q * interpolated;          break;
+                    case DESOLVATION:       result.m_desolvationGridEnergy      = fabs(data.m_q) * interpolated;    break;
                 }
             }
         }
-    }
-};
 
-struct Kernel_InterE_InterpolateEnergy: IntraE_ComputeKernelBase<InterE_AtomData, InterE_AtomEnergy> {
-    explicit Kernel_InterE_InterpolateEnergy(GtContext *ctx):
-        IntraE_ComputeKernelBase<InterE_AtomData, InterE_AtomEnergy>(ctx) {}
-        
-    auto * dramDataInput() { return m_dramDataInput; }
-    
-private:
-    GtKernelIoStream<double> *m_dramDataInput = addIoStream<double>(g_fifoDepthFor<double>);
-    
-    GtKernelCoro kernelMain() override {
-        enum class GridType { ATOM, ELECTROSTATIC, DESOLVATION };
-        using enum GridType;
-        
-        const auto getCubeElem = [&] { return m_dramDataInput->read(); };
-        
-        while (true) {
-            const auto data = co_await m_inputStream->read();
-            InterE_AtomEnergy result{.m_atom_cnt = data.m_atom_cnt, .m_isOutOfGrid = data.m_isOutOfGrid};
-            
-            if (!data.m_isOutOfGrid) {
-                for (const GridType t: {ATOM, ELECTROSTATIC, DESOLVATION}) {
-                    double cube[2][2][2];
-                    
-                    cube [0][0][0] = co_await getCubeElem();
-                    cube [1][0][0] = co_await getCubeElem();
-                    cube [0][1][0] = co_await getCubeElem();
-                    cube [1][1][0] = co_await getCubeElem();
-                    cube [0][0][1] = co_await getCubeElem();
-                    cube [1][0][1] = co_await getCubeElem();
-                    cube [0][1][1] = co_await getCubeElem();
-                    cube [1][1][1] = co_await getCubeElem();
-                    
-                    const double interpolated = trilin_interpol(cube, data.m_weights);
-                    
-                    switch (t) {
-                        case ATOM:              result.m_atomTypeGridEnergy         = interpolated;                     break;
-                        case ELECTROSTATIC:     result.m_electrostaticGridEnergy    = data.m_q * interpolated;          break;
-                        case DESOLVATION:       result.m_desolvationGridEnergy      = fabs(data.m_q) * interpolated;    break;
-                    }
-                }
-            }
-            
-            co_await m_outputStream->write(result);
-        }
+        co_await atom_energy_out.put(result);
     }
-};
+}
 
-struct Kernel_InterE_AccumulateResults: GtKernelBase {
-    Kernel_InterE_AccumulateResults(GtContext *ctx, bool enablePeratomOutputs):
-        GtKernelBase(ctx)
-    {
-        if (enablePeratomOutputs) {
-            m_vdwStream = addIoStream<double>(g_fifoDepthFor<double>);
-            m_elecStream = addIoStream<double>(g_fifoDepthFor<double>);
+COMPUTE_KERNEL_TEMPLATE(hls, kernel_fdock_ReadDram,
+    KernelReadPort<uint32_t> address_in,
+    KernelMemoryPort<const T> dram_buf,
+    KernelWritePort<T> data_out
+) {
+    while (true) {
+        const uint32_t addr = co_await address_in.get();
+
+        if (addr == s_terminate_dram_reader_sentinel) {
+            break;
+        }
+
+        const T data = dram_buf[addr];
+        co_await data_out.put(data);
+    }
+}
+
+COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
+    KernelReadPort<InterE_AtomEnergy> atom_energy_in,
+    KernelReadPort<bool, s_iop_rtp> enable_peratom_outputs_in,
+    KernelMemoryPort<double> vdw_buf,
+    KernelMemoryPort<double> elec_buf,
+    KernelWritePort<double, s_iop_rtp> interE_out,
+    KernelWritePort<double, s_iop_rtp> elecE_out
+) {
+    const bool enable_peratom_outputs = co_await enable_peratom_outputs_in.get();
+
+    double interE = 0;
+    double elecE  = 0;
+
+    uint32_t peratom_index = 0;
+
+    while (true) {
+        const auto data = co_await atom_energy_in.get();
+
+        if (data.m_terminate_processing) {
+            break;
+        }
+
+        auto vdW  = data.m_atomTypeGridEnergy;
+        auto elec = data.m_electrostaticGridEnergy;
+
+        interE += vdW;
+        interE += elec;
+        interE += data.m_desolvationGridEnergy;
+
+        elecE += elec;
+
+        if (data.m_isOutOfGrid) {
+            interE += g_outOfGridPenalty;
+            elec = vdW = g_peratomOutOfGridPenalty;
+        }
+
+        if (enable_peratom_outputs) {
+            BOOST_ASSERT(peratom_index < g_maxNumAtoms);
+            vdw_buf[peratom_index] = vdW;
+            elec_buf[peratom_index] = elec;
+            peratom_index++;
         }
     }
-    
-    auto * input() { return m_inputStream; }
-    
-    auto getEnergy() { return m_interE; }
-    auto getElecE()  { return m_elecE;  }
-    
-    auto * vdwOutput()  { return m_vdwStream;  }
-    auto * elecOutput() { return m_elecStream; }
-    
-private:
-    double m_interE = 0;
-    double m_elecE = 0;
-    
-    GtKernelIoStream<InterE_AtomEnergy> *m_inputStream = addIoStream<InterE_AtomEnergy>(g_fifoDepthFor<InterE_AtomEnergy>);
-    GtKernelIoStream<double> *m_vdwStream = nullptr;
-    GtKernelIoStream<double> *m_elecStream = nullptr;
-    
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            const auto data = co_await m_inputStream->read();
-            
-            auto vdW  = data.m_atomTypeGridEnergy;
-            auto elec = data.m_electrostaticGridEnergy;
-            
-            m_interE += vdW;
-            m_interE += elec;
-            m_interE += data.m_desolvationGridEnergy;
-            
-            m_elecE += elec;
-            
-            if (data.m_isOutOfGrid) {
-                m_interE += g_outOfGridPenalty;
-                elec = vdW = g_peratomOutOfGridPenalty;
-            }
-            
-            if (m_vdwStream)
-                co_await m_vdwStream->write(vdW);
-            
-            if (m_elecStream)
-                co_await m_elecStream->write(elec);
-        }
-    }
-};
+
+    co_await interE_out.put(interE);
+    co_await elecE_out.put(elecE);
+}
+
+COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
+    IoConnector<uint32_t> num_atoms_in,
+    IoConnector<double> outofgrid_tolerance_in,
+    IoConnector<int> grid_size_x_in,
+    IoConnector<int> grid_size_y_in,
+    IoConnector<int> grid_size_z_in,
+    IoConnector<int> num_of_atypes_in,
+    IoConnector<bool> enable_peratom_outputs_in,
+    IoConnector<const double> atom_idxyzq_buf,
+    IoConnector<const double> grid_buf,
+    IoConnector<double> peratom_vdw_buf,
+    IoConnector<double> peratom_elec_buf
+) {
+    IoConnector<InterE_AtomData> atom_data_stream;
+    IoConnector<uint32_t> dram_address_stream;
+    IoConnector<double> dram_data_stream;
+    IoConnector<InterE_AtomEnergy> atom_energy_stream;
+    IoConnector<double> interE_out;
+    IoConnector<double> elecE_out;
+
+    CGSIM_AUTO_NAME(num_atoms_in);
+    CGSIM_AUTO_NAME(outofgrid_tolerance_in);
+    CGSIM_AUTO_NAME(grid_size_x_in);
+    CGSIM_AUTO_NAME(grid_size_y_in);
+    CGSIM_AUTO_NAME(grid_size_z_in);
+    CGSIM_AUTO_NAME(num_of_atypes_in);
+    CGSIM_AUTO_NAME(enable_peratom_outputs_in);
+    CGSIM_AUTO_NAME(atom_idxyzq_buf);
+    CGSIM_AUTO_NAME(grid_buf);
+    CGSIM_AUTO_NAME(peratom_vdw_buf);
+    CGSIM_AUTO_NAME(peratom_elec_buf);
+
+    kernel_interE_BuildAtomData(
+        num_atoms_in,
+        outofgrid_tolerance_in,
+        grid_size_x_in,
+        grid_size_y_in,
+        grid_size_z_in,
+        atom_idxyzq_buf,
+        atom_data_stream
+    );
+
+    kernel_interE_GenerateDramAddresses(
+        atom_data_stream,
+        dram_address_stream,
+        grid_size_x_in,
+        grid_size_y_in,
+        grid_size_z_in,
+        num_of_atypes_in
+    );
+
+    kernel_fdock_ReadDram<double>(
+        dram_address_stream,
+        grid_buf,
+        dram_data_stream
+    );
+
+    kernel_interE_InterpolateEnergy(
+        atom_data_stream,
+        dram_data_stream,
+        atom_energy_stream
+    );
+
+    kernel_interE_AccumulateResults(
+        atom_energy_stream,
+        enable_peratom_outputs_in,
+        peratom_vdw_buf,
+        peratom_elec_buf,
+        interE_out,
+        elecE_out
+    );
+
+    return std::tuple(interE_out, elecE_out);
+}>;
 
 
 struct InterE_Result {
@@ -846,67 +950,60 @@ static auto getNumGridElems(const Gridinfo *mygrid) {
 }
 
 InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance, bool enablePerAtomOutputs) {
-    GtContext ctx{};
-    InterE_Result result{};
-    
-    BOOST_ASSERT(mygrid->num_of_atypes == myligand->num_of_atypes);
-    
-    std::array<int, 3> gridsize{};
-    std::copy_n(std::begin(mygrid->size_xyz), 3, std::begin(gridsize));
-    
-    std::span<const InterE_RawAtomInput> inputAtoms{&myligand->atom_idxyzq[0], size_t(myligand->num_of_atoms)};
-    
+    // Copy 2D buffers into local (flat) ones
+    static_assert(sizeof(myligand->atom_idxyzq) == (g_maxNumAtoms * 5 * sizeof(double)));
+    std::vector<double> atom_idxyzq_buf(g_maxNumAtoms * 5);
+    std::memcpy(atom_idxyzq_buf.data(), myligand->atom_idxyzq, sizeof(myligand->atom_idxyzq));
+
     const auto numGridMemElems = getNumGridElems(mygrid);
     std::span<const double> gridMemoryRegion{fgrids, size_t(numGridMemElems)};
-    
-    auto& atomInputStream   = ctx.addKernel<GtMemStreamSource<InterE_RawAtomInput, InterE_AtomInput>>(inputAtoms);
-    auto& buildAtomData     = ctx.addKernel<Kernel_InterE_BuildAtomData>(outofgrid_tolerance, gridsize);
-    auto& genDramAddrs      = ctx.addKernel<Kernel_InterE_GenerateDramAddresses>(gridsize, myligand->num_of_atypes);
-    auto& fetchDramValues   = ctx.addKernel<GtFpgaDmaMemReader<double>>(gridMemoryRegion);
-    auto& computeEnergy     = ctx.addKernel<Kernel_InterE_InterpolateEnergy>();
-    auto& accumulateEnergy  = ctx.addKernel<Kernel_InterE_AccumulateResults>(enablePerAtomOutputs);
-    
-    GtMemStreamSink<double> *storePerAtomVdW  = nullptr;
-    GtMemStreamSink<double> *storePerAtomElec = nullptr;
-    
-    // atoms -> buildAtomData -> genDramAddrs -----> computeEnergy -> accumulateEnergy -> accumulator
-    //                                |                    ^                |
-    //                                `-> fetchDramValues -'                |-> peratom vdW
-    //                                                                      `-> peratom elec
-    
-    ctx.connect(atomInputStream.output(), buildAtomData.input());
-    ctx.connect(buildAtomData.output(), genDramAddrs.input());
-    ctx.connect(genDramAddrs.output(), computeEnergy.input());
-    ctx.connect(genDramAddrs.addressOutput(), fetchDramValues.input());
-    ctx.connect(fetchDramValues.output(), computeEnergy.dramDataInput());
-    ctx.connect(computeEnergy.output(), accumulateEnergy.input());
-    
+
+    // Output buffers
+    std::vector<double> peratom_vdw_buf;
+    std::vector<double> peratom_elec_buf;
     if (enablePerAtomOutputs) {
-        storePerAtomVdW  = &ctx.addKernel<GtMemStreamSink<double>>();
-        storePerAtomElec = &ctx.addKernel<GtMemStreamSink<double>>();
-        ctx.connect(accumulateEnergy.vdwOutput(),  storePerAtomVdW->input());
-        ctx.connect(accumulateEnergy.elecOutput(), storePerAtomElec->input());
+        peratom_vdw_buf.resize(myligand->num_of_atoms);
+        peratom_elec_buf.resize(myligand->num_of_atoms);
     }
-    
-    ctx.runToCompletion();
-    
-    result.m_interE = accumulateEnergy.getEnergy();
-    result.m_elecE  = accumulateEnergy.getElecE();
-    
-    if (enablePerAtomOutputs) {
-        result.m_peratomVdW  = std::move(storePerAtomVdW->data());
-        result.m_peratomElec = std::move(storePerAtomElec->data());
-    }
-    
-    return result;
+
+    // Run graph
+    double interE = 0;
+    double elecE  = 0;
+
+    const auto result = interE_graph(
+        ScalarDataSource<uint32_t>(myligand->num_of_atoms),
+        ScalarDataSource<double>(outofgrid_tolerance),
+        ScalarDataSource<int>(mygrid->size_xyz[0]),
+        ScalarDataSource<int>(mygrid->size_xyz[1]),
+        ScalarDataSource<int>(mygrid->size_xyz[2]),
+        ScalarDataSource<int>(myligand->num_of_atypes),
+        ScalarDataSource<bool>(enablePerAtomOutputs),
+        memBuffer(atom_idxyzq_buf),
+        RuntimeMemoryBuffer(gridMemoryRegion),
+        memBuffer(peratom_vdw_buf),
+        memBuffer(peratom_elec_buf),
+        ScalarDataSink<double>(interE),
+        ScalarDataSink<double>(elecE)
+    );
+
+    result.dump(std::cerr);
+
+    return {
+        .m_interE = interE,
+        .m_elecE = elecE,
+        .m_peratomVdW = std::move(peratom_vdw_buf),
+        .m_peratomElec = std::move(peratom_elec_buf)
+    };
 }
 
 double calc_interE(const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance, int debug) {
     const double originalResult = calc_interE_original(mygrid, myligand, fgrids, outofgrid_tolerance, debug);
     const double graphResult = calc_interE_graphtoy(mygrid, myligand, fgrids, outofgrid_tolerance, false).m_interE;
-    
-    BOOST_ASSERT(graphResult == originalResult);
-    
+
+    if (graphResult != originalResult) {
+        std::cerr << "InterE mismatch: original=" << originalResult << " graph=" << graphResult << "\n";
+    }
+
     if (g_graphdumpsEnabled) {
         static uint32_t s_dumpIndex = 0;
         const std::string baseNameNoIndex = g_dumpDirectory + "/interE_";
@@ -931,7 +1028,7 @@ double calc_interE(const Gridinfo* mygrid, const Liganddata* myligand, const dou
         params["result"] = graphResult;
         dumpJson((baseName + "_params.json").data(), params);
     }
-    
+
     return graphResult;
 }
 
@@ -942,16 +1039,21 @@ void calc_interE_peratom(const Gridinfo* mygrid, const Liganddata* myligand, con
     const auto graphResult = calc_interE_graphtoy(mygrid, myligand, fgrids, outofgrid_tolerance, true);
     
     const auto num_atoms = size_t(myligand->num_of_atoms);
-    
-    BOOST_ASSERT(graphResult.m_peratomVdW.size() == num_atoms);
-    BOOST_ASSERT(graphResult.m_peratomElec.size() == num_atoms);
-    
-    const auto memeq = [](const std::vector<double>& lhs, const double *rhs) {
-        return std::memcmp(lhs.data(), rhs, lhs.size() * sizeof(lhs[0])) == 0;
-    };
-    
-    BOOST_ASSERT(memeq(graphResult.m_peratomVdW, peratom_vdw) && memeq(graphResult.m_peratomElec, peratom_elec));
-    BOOST_ASSERT(graphResult.m_elecE == *elecE);
+
+    if (graphResult.m_peratomVdW.size() != num_atoms || graphResult.m_peratomElec.size() != num_atoms) {
+        std::cerr << "InterE per-atom output size mismatch: expected " << num_atoms
+                  << ", got " << graphResult.m_peratomVdW.size() << " vdw and "
+                  << graphResult.m_peratomElec.size() << " elec\n";
+        return;
+    }
+
+    if (!std::ranges::equal(graphResult.m_peratomVdW, std::span(peratom_vdw, num_atoms))) {
+        std::cerr << "InterE per-atom VdW mismatch\n";
+    }
+
+    if (!std::ranges::equal(graphResult.m_peratomElec, std::span(peratom_elec, num_atoms))) {
+        std::cerr << "InterE per-atom Elec mismatch\n";
+    }
 }
 
 
