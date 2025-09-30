@@ -4,4 +4,7 @@
 .directory
 /.cache
 /fdock_cpu
-
+/initpop.txt
+/seeds.txt
+/docking.dlg
+/docking.xml
