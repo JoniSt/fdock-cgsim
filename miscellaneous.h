@@ -17,6 +17,10 @@
 #include <stdlib.h>
 #include <ctype.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct
 //Struct which describes a quaternion.
 {
@@ -56,5 +60,9 @@ void vec_crossprod(const double [], const double [], double []);
 void get_trilininterpol_weights(double [][2][2], const double, const double, const double);
 
 int stricmp(const char*, const char*);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* MISCELLANEOUS_H_ */

@@ -1046,6 +1046,6 @@ void change_conform(Liganddata* myligand, const double genotype [], int debug) {
     }
 }
 
-void enable_graphdumps() {
+extern "C" void enable_graphdumps() {
     g_graphdumpsEnabled = true;
 }

@@ -20,6 +20,10 @@
 //Getting full path of the grid file
 #include <libgen.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "miscellaneous.h"
 
 #define getvalue_4Darr(mempoi, grinf, t, z, y, x) *(mempoi+(grinf).size_xyz [0]*(y+(grinf).size_xyz [1]*(z+(grinf).size_xyz [2]*t))+x)
@@ -50,5 +54,9 @@ int eldes2fracint(double , double);
 int get_gridinfo(const char*, Gridinfo*);
 
 int get_gridvalues(const Gridinfo*, double**);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* PROCESSGRID_H_ */

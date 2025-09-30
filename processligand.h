@@ -19,6 +19,10 @@
 #include "processgrid.h"
 #include "miscellaneous.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define ATYPE_NUM 22
 
 typedef struct
@@ -29,7 +33,7 @@ typedef struct
 //atom_types: Each row (first index) contain an atom type (as two characters), the row
 //			  index is equal to the atom type code.
 //atom_idxyzq: Each row describes one atom of the ligand. The columns (second index)
-//			   contain the  atom type code, x, y and z coordinate (in Angströms) and
+//			   contain the  atom type code, x, y and z coordinate (in Angstrï¿½ms) and
 //			   electrical charge  of the atom. The row index is equal to the index of the
 //			   current atom.
 //rotbonds: Each row corresponds to one rotatable bond of the ligand. The rotatable bond
@@ -137,5 +141,9 @@ void calc_interE_peratom         (const Gridinfo*, const Liganddata*, const doub
 void calc_interE_peratom_original(const Gridinfo*, const Liganddata*, const double*, double, double*, double [256], double [256], int);
 
 void print_ref_lig_energies(Liganddata, Gridinfo, const double*, const double, const double, const double);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* PROCESSLIGAND_H_ */

@@ -14,6 +14,10 @@
 #include <string.h>
 #include <math.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "defines.h"
 #include "processligand.h"
 #include "getparameters.h"
@@ -50,5 +54,9 @@ void make_resfiles(double [][40], const Liganddata*, const Liganddata*,
 //					  char**, const double, const double);
 
 void clusanal_gendlg(Ligandresult [], int, const Liganddata*, const Dockpars*, const Gridinfo*, const int*, char**);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* PROCESSRESULT_H_ */
