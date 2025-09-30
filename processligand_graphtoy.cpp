@@ -1,5 +1,3 @@
-#include "processligand.h"
-
 #include <cstring>
 #include <string>
 #include <vector>
@@ -11,11 +9,14 @@
 #include <algorithm>
 #include <bit>
 #include <climits>
+#include <cmath>
+#include <optional>
 
 #include <boost/assert.hpp>
 
-#include "json.hpp"
+#include "processligand.h"
 #include "cgsim/cgsim.hpp"
+#include "json.hpp"
 
 using namespace ttlhacker::cgsim;
 
