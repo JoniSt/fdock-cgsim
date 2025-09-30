@@ -23,7 +23,6 @@ target_sources(fdock_cpu PRIVATE
     processresult.c
     searchoptimum.c
     processligand_graphtoy.cpp
-    graphtoy/graphtoy.cpp
 
     defines.h
     getparameters.h
@@ -34,7 +33,6 @@ target_sources(fdock_cpu PRIVATE
     processresult.h
     searchoptimum.h
     json.hpp
-    graphtoy/graphtoy.hpp
 )
 
 if (NOT DEFINED ENV{CGSIM_INSTALL_DIR})
