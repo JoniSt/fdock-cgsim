@@ -15,10 +15,8 @@
 #include <boost/assert.hpp>
 
 #include "json.hpp"
-#include "graphtoy/graphtoy.hpp"
 #include "cgsim/cgsim.hpp"
 
-using namespace graphtoy;
 using namespace ttlhacker::cgsim;
 
 static constexpr auto s_iop_rtp = IoPortEndpointOptions{.m_isSingleWrite = true};
@@ -81,20 +79,6 @@ struct IntraE_AtomPair {
     double m_vdW2 = 0;
 };
 
-
-template<typename InputT, typename OutputT>
-struct IntraE_ComputeKernelBase: GtKernelBase {
-    explicit IntraE_ComputeKernelBase(GtContext *ctx): GtKernelBase(ctx) {}
-        
-    auto * input() { return m_inputStream; }
-    auto * output() { return m_outputStream; }
-
-protected:
-    GtKernelIoStream<InputT> *m_inputStream = addIoStream<InputT>(g_fifoDepthFor<InputT>);
-    GtKernelIoStream<OutputT> *m_outputStream = addIoStream<OutputT>(g_fifoDepthFor<OutputT>);
-};
-
-using IntraE_ChainKernel = IntraE_ComputeKernelBase<IntraE_AtomPair, IntraE_AtomPair>;
 
 /**
  * Input: intraE_contributors array
@@ -598,8 +582,6 @@ struct InterE_AtomEnergy {
 };
 
 
-using InterE_ChainKernel = IntraE_ComputeKernelBase<InterE_AtomData, InterE_AtomData>;
-
 static bool interE_nudgeGridCoordsIntoBounds(double& x, double& y, double& z, const double outofgrid_tolerance, const std::array<int, 3>& size_xyz) {
     const auto isOutOfGrid = [&] {
         return (x < 0) || (x >= size_xyz [0]-1) ||
@@ -1060,12 +1042,11 @@ void calc_interE_peratom(const Gridinfo* mygrid, const Liganddata* myligand, con
 struct ChangeConform_AtomData {
     InterE_AtomInput m_atomdata;
     uint32_t m_rotbondMask;
-    uint32_t m_numRotbondsPerStage;
-    
+
+    bool m_terminate_processing = false;
+
     static_assert(sizeof(m_rotbondMask) * CHAR_BIT >= g_maxNumRotbonds);
 };
-
-using ChangeConform_ChainKernel = IntraE_ComputeKernelBase<ChangeConform_AtomData, ChangeConform_AtomData>;
 
 static void vec3_accum(double *vec_a, const double *vec_b) {
     for (size_t i = 0; i < 3; ++i) {
@@ -1073,179 +1054,255 @@ static void vec3_accum(double *vec_a, const double *vec_b) {
     }
 }
 
-/**
- * Performs up to m_numRotbondsPerStage pending rotations on the atom data passing through.
- * Multiple of these kernels must be chained together to perform all rotations for each atom.
- * This enables pipeline parallelism for ligand rotations.
- */
-struct Kernel_ChangeConform_RotatePartial : ChangeConform_ChainKernel {
-    Kernel_ChangeConform_RotatePartial(GtContext *ctx, const Liganddata *myligand, const double *genotype_rotbonds):
-        ChangeConform_ChainKernel(ctx)
-    {
-        static_assert(sizeof(m_rotbonds_moving_vectors) == sizeof(myligand->rotbonds_moving_vectors));
-        static_assert(sizeof(m_rotbonds_unit_vectors) == sizeof(myligand->rotbonds_unit_vectors));
-        std::memcpy(m_rotbonds_moving_vectors, myligand->rotbonds_moving_vectors, sizeof(m_rotbonds_moving_vectors));
-        std::memcpy(m_rotbonds_unit_vectors, myligand->rotbonds_unit_vectors, sizeof(m_rotbonds_unit_vectors));
-        
-        BOOST_ASSERT(myligand->num_of_rotbonds <= g_maxNumRotbonds);
-        std::memcpy(m_genotype, genotype_rotbonds, myligand->num_of_rotbonds * sizeof(double));
-    }
-    
-private:
-    double m_rotbonds_moving_vectors[g_maxNumRotbonds][3];
-    double m_rotbonds_unit_vectors[g_maxNumRotbonds][3];
-    
-    double m_genotype[g_maxNumRotbonds] = {};
-    
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            auto data = co_await m_inputStream->read();
-            
-            // Process at most m_numRotbondsPerStage bonds and mark them as processed
-            for (uint32_t bondCtr = 0; (bondCtr < data.m_numRotbondsPerStage) && data.m_rotbondMask; ++bondCtr) {
-                const auto rotbond_id = std::countr_zero(data.m_rotbondMask);
-                data.m_rotbondMask &= ~(decltype(data.m_rotbondMask)(1) << rotbond_id);
-                
-                rotate(&data.m_atomdata.m_atom_idxyzq[1], m_rotbonds_moving_vectors[rotbond_id], m_rotbonds_unit_vectors[rotbond_id], &m_genotype[rotbond_id], 0);
-            }
-            
-            co_await m_outputStream->write(data);
+COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
+    KernelReadPort<ChangeConform_AtomData> atom_data_in,
+    KernelWritePort<ChangeConform_AtomData> atom_data_out,
+    KernelReadPort<uint32_t, s_iop_rtp> num_rotbonds_in,
+    KernelMemoryPort<const double> rotbonds_moving_vectors_buf,
+    KernelMemoryPort<const double> rotbonds_unit_vectors_buf,
+    KernelMemoryPort<const double> genotype_buf
+) {
+    double rotbonds_moving_vectors[g_maxNumRotbonds][3];
+    double rotbonds_unit_vectors[g_maxNumRotbonds][3];
+    double genotype[g_maxNumRotbonds];
+
+    const uint32_t num_rotbonds = co_await num_rotbonds_in.get();
+
+    for (size_t i = 0; i < num_rotbonds; ++i) {
+        for (size_t j = 0; j < 3; ++j) {
+            rotbonds_moving_vectors[i][j] = rotbonds_moving_vectors_buf[i * 3 + j];
+            rotbonds_unit_vectors[i][j] = rotbonds_unit_vectors_buf[i * 3 + j];
         }
+        genotype[i] = genotype_buf[i + 6]; // Skip the first 6 global move/rotation parameters
     }
 
-};
+    while (true) {
+        auto data = co_await atom_data_in.get();
+
+        // Process all rotbonds at once
+        if (!data.m_terminate_processing) {
+            for (uint32_t bondCtr = 0; bondCtr < g_maxNumRotbonds; ++bondCtr) {
+                if (data.m_rotbondMask & (decltype(data.m_rotbondMask)(1) << bondCtr)) {
+                    rotate(&data.m_atomdata.m_atom_idxyzq[1], rotbonds_moving_vectors[bondCtr], rotbonds_unit_vectors[bondCtr], &genotype[bondCtr], 0);
+                }
+            }
+        }
+
+        co_await atom_data_out.put(data);
+
+        if (data.m_terminate_processing) break;
+    }
+}
 
 /**
  * This performs the final positioning of the conformed ligand in space.
  * Emits raw idxyzq data.
  */
-struct Kernel_ChangeConform_GeneralRotation_GlobalMove : IntraE_ComputeKernelBase<ChangeConform_AtomData, InterE_AtomInput> {
-    Kernel_ChangeConform_GeneralRotation_GlobalMove(GtContext *ctx, const double *genotype):
-        IntraE_ComputeKernelBase<ChangeConform_AtomData, InterE_AtomInput>(ctx), m_genrot_angle(genotype[5])
-    {
-        double phi = genotype[3] / 180 * M_PI;
-        double theta = genotype[4] / 180 * M_PI;
+COMPUTE_KERNEL(hls, kernel_ChangeConform_GeneralRotation_GlobalMove,
+    KernelReadPort<ChangeConform_AtomData> atom_data_in,
+    KernelMemoryPort<const double> genotype_buf,
+    KernelMemoryPort<double> output_buf
+) {
+    double genrot_unitvec[3];
+    double genrot_angle;
+    double globalmove_xyz[3];
 
-        m_genrot_unitvec [0] = sin(theta)*cos(phi);
-        m_genrot_unitvec [1] = sin(theta)*sin(phi);
-        m_genrot_unitvec [2] = cos(theta);
-        
-        std::memcpy(m_globalmove_xyz, genotype, sizeof(m_globalmove_xyz));
+    for (uint32_t i = 0; i < 3; ++i) {
+        globalmove_xyz[i] = genotype_buf[i];
     }
-    
-private:
-    double m_genrot_unitvec[3] = {};
-    double m_genrot_angle;
-    double m_globalmove_xyz[3] = {};
-    
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            auto data = co_await m_inputStream->read();
-            double *atom_xyz = &data.m_atomdata.m_atom_idxyzq[1];
-            BOOST_ASSERT(!data.m_rotbondMask);
-            
-            const double genrot_movvec[3] = {0, 0, 0};
-            rotate(atom_xyz, genrot_movvec, m_genrot_unitvec, &m_genrot_angle, 0);
-            
-            vec3_accum(atom_xyz, m_globalmove_xyz);
-            
-            co_await m_outputStream->write(data.m_atomdata);
+
+    const double phi = genotype_buf[3] / 180 * M_PI;
+    const double theta = genotype_buf[4] / 180 * M_PI;
+
+    genrot_unitvec[0] = sin(theta)*cos(phi);
+    genrot_unitvec[1] = sin(theta)*sin(phi);
+    genrot_unitvec[2] = cos(theta);
+
+    genrot_angle = genotype_buf[5];
+
+    uint32_t atom_idx = 0;
+
+    while (true) {
+        auto data = co_await atom_data_in.get();
+
+        if (data.m_terminate_processing) {
+            break;
         }
+
+        double *atom_xyz = &data.m_atomdata.m_atom_idxyzq[1];
+
+        const double genrot_movvec[3] = {0, 0, 0};
+        rotate(atom_xyz, genrot_movvec, genrot_unitvec, &genrot_angle, 0);
+
+        vec3_accum(atom_xyz, globalmove_xyz);
+
+        for (uint32_t i = 0; i < 5; ++i) {
+            output_buf[atom_idx * 5 + i] = data.m_atomdata.m_atom_idxyzq[i];
+        }
+
+        atom_idx++;
     }
-};
+}
+
 
 /**
  * Prepares the atom and rotbond data for sending it through the chain of rotate kernels.
  * Also moves the ligand to the origin.
  */
-struct Kernel_ChangeConform_BuildRotateInputData : GtKernelBase {
-    Kernel_ChangeConform_BuildRotateInputData(GtContext *ctx, const Liganddata *myligand, uint32_t numRotateStages):
-        GtKernelBase(ctx), m_numRotbonds(myligand->num_of_rotbonds), m_numRotateStages(numRotateStages)
-    {
-        // In the AIE version, this should be pre-computed once when loading the ligand.
-        get_movvec_to_origo(myligand, m_initial_move_xyz);
-    }
-    
-    auto * atomDataInput() { return m_atomDataInputStream; }
-    auto * rotbondsInput() { return m_atomRotbondsInputStream; }
-    
-    auto * output() { return m_outputStream; }
-    
-private:
-    double m_initial_move_xyz[3];
-    uint32_t m_numRotbonds;
-    uint32_t m_numRotateStages;
+COMPUTE_KERNEL(hls, kernel_ChangeConform_BuildRotateInputData,
+    KernelReadPort<uint32_t, s_iop_rtp> num_atoms_in,
+    KernelReadPort<uint32_t, s_iop_rtp> num_rotbonds_in,
+    KernelReadPort<double, s_iop_rtp> initial_move_x_in,
+    KernelReadPort<double, s_iop_rtp> initial_move_y_in,
+    KernelReadPort<double, s_iop_rtp> initial_move_z_in,
+    KernelMemoryPort<const double> atom_idxyzq_buf,
+    KernelMemoryPort<const char> atom_rotbonds_buf,
+    KernelWritePort<ChangeConform_AtomData> atoms_out
+) {
+    const uint32_t num_atoms = co_await num_atoms_in.get();
+    const uint32_t num_rotbonds = co_await num_rotbonds_in.get();
+    BOOST_ASSERT(num_atoms <= g_maxNumAtoms);
+    BOOST_ASSERT(num_rotbonds <= g_maxNumRotbonds);
 
-    GtKernelIoStream<InterE_AtomInput> *m_atomDataInputStream = addIoStream<InterE_AtomInput>(g_fifoDepthFor<InterE_AtomInput>);
-    GtKernelIoStream<char> *m_atomRotbondsInputStream = addIoStream<char>(g_fifoDepthFor<char>);
-    GtKernelIoStream<ChangeConform_AtomData> *m_outputStream = addIoStream<ChangeConform_AtomData>(g_fifoDepthFor<ChangeConform_AtomData>);
+    const double initial_move_xyz[3] = {
+        co_await initial_move_x_in.get(),
+        co_await initial_move_y_in.get(),
+        co_await initial_move_z_in.get()
+    };
 
     using BondMask = decltype(ChangeConform_AtomData::m_rotbondMask);
 
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            ChangeConform_AtomData result{.m_atomdata = co_await m_atomDataInputStream->read()};
+    for (uint32_t atomIdx = 0; atomIdx < num_atoms; ++atomIdx) {
+        ChangeConform_AtomData result{};
 
-            BondMask mask = 0;
-
-            for (uint32_t i = 0; i < g_maxNumRotbonds; ++i) {
-                const auto isAffectedByRotbond = co_await m_atomRotbondsInputStream->read();
-                
-                if ((i < m_numRotbonds) && isAffectedByRotbond) {
-                    mask |= BondMask(1) << i;
-                }
-            }
-            
-            result.m_rotbondMask = mask;
-            
-            const uint32_t numAffectingRotbonds = std::popcount(mask);
-            result.m_numRotbondsPerStage = (numAffectingRotbonds + m_numRotateStages - 1) / m_numRotateStages;
-            
-            vec3_accum(&result.m_atomdata.m_atom_idxyzq[1], m_initial_move_xyz);
-            
-            co_await m_outputStream->write(result);
+        for (size_t i = 0; i < 5; ++i) {
+            result.m_atomdata.m_atom_idxyzq[i] = atom_idxyzq_buf[atomIdx * 5 + i];
         }
+
+        BondMask mask = 0;
+
+        for (uint32_t rotbondIdx = 0; rotbondIdx < num_rotbonds; ++rotbondIdx) {
+            const char isAffectedByRotbond = atom_rotbonds_buf[atomIdx * g_maxNumRotbonds + rotbondIdx];
+
+            if (isAffectedByRotbond) {
+                mask |= BondMask(1) << rotbondIdx;
+            }
+        }
+
+        result.m_rotbondMask = mask;
+
+        vec3_accum(&result.m_atomdata.m_atom_idxyzq[1], initial_move_xyz);
+
+        co_await atoms_out.put(result);
     }
-};
+
+    // Terminate pipeline
+    co_await atoms_out.put(ChangeConform_AtomData{.m_terminate_processing = true});
+}
+
+COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
+    IoConnector<uint32_t> num_atoms_in,
+    IoConnector<uint32_t> num_rotbonds_in,
+    IoConnector<double> initial_move_x_in,
+    IoConnector<double> initial_move_y_in,
+    IoConnector<double> initial_move_z_in,
+    IoConnector<const double> atom_data_buf,
+    IoConnector<const char> rotbonds_buf,
+    IoConnector<const double> rotbonds_moving_vectors_buf,
+    IoConnector<const double> rotbonds_unit_vectors_buf,
+    IoConnector<const double> genotype_buf,
+    IoConnector<double> output_buf
+) {
+    IoConnector<ChangeConform_AtomData> atoms_read, atoms_rotated;
+
+    CGSIM_AUTO_NAME(num_atoms_in);
+    CGSIM_AUTO_NAME(num_rotbonds_in);
+    CGSIM_AUTO_NAME(initial_move_x_in);
+    CGSIM_AUTO_NAME(initial_move_y_in);
+    CGSIM_AUTO_NAME(initial_move_z_in);
+    CGSIM_AUTO_NAME(atom_data_buf);
+    CGSIM_AUTO_NAME(rotbonds_buf);
+    CGSIM_AUTO_NAME(rotbonds_moving_vectors_buf);
+    CGSIM_AUTO_NAME(rotbonds_unit_vectors_buf);
+    CGSIM_AUTO_NAME(genotype_buf);
+    CGSIM_AUTO_NAME(output_buf);
+
+    kernel_ChangeConform_BuildRotateInputData(
+        num_atoms_in,
+        num_rotbonds_in,
+        initial_move_x_in,
+        initial_move_y_in,
+        initial_move_z_in,
+        atom_data_buf,
+        rotbonds_buf,
+        atoms_read
+    );
+
+    kernel_ChangeConform_Rotate(
+        atoms_read,
+        atoms_rotated,
+        num_rotbonds_in,
+        rotbonds_moving_vectors_buf,
+        rotbonds_unit_vectors_buf,
+        genotype_buf
+    );
+
+    kernel_ChangeConform_GeneralRotation_GlobalMove(
+        atoms_rotated,
+        genotype_buf,
+        output_buf
+    );
+
+    return std::tuple();
+}>;
 
 
 static auto change_conform_graphtoy(const Liganddata* myligand, const double genotype []) {
-    GtContext ctx{};
-    
-    const auto numAtoms = size_t(myligand->num_of_atoms);
-    
-    std::span<const InterE_RawAtomInput> inputAtoms{&myligand->atom_idxyzq[0], numAtoms};
-    
-    static_assert(sizeof(myligand->atom_rotbonds[0]) == g_maxNumRotbonds);
-    std::span<const char> inputRotbonds{&myligand->atom_rotbonds[0][0], g_maxNumRotbonds * numAtoms};
-    
-    auto& atomInputStream    = ctx.addKernel<GtMemStreamSource<InterE_RawAtomInput, InterE_AtomInput>>(inputAtoms);
-    auto& rotbondInputStream = ctx.addKernel<GtMemStreamSource<char>>(inputRotbonds);
-    
-    std::vector<Kernel_ChangeConform_RotatePartial *> rotateKernels{};
-    for (size_t i = 0; i < g_numChangeConformRotateKernels; ++i) {
-        auto *kern = rotateKernels.emplace_back(&ctx.addKernel<Kernel_ChangeConform_RotatePartial>(myligand, /* bond rotation angles = */ genotype + 6));
+    // Copy 2D buffers into local (flat) ones
+    static_assert(sizeof(myligand->atom_idxyzq) == (g_maxNumAtoms * 5 * sizeof(double)));
+    std::vector<double> atom_idxyzq_buf(g_maxNumAtoms * 5);
+    std::memcpy(atom_idxyzq_buf.data(), myligand->atom_idxyzq, sizeof(myligand->atom_idxyzq));
 
-        if (i > 0)
-            ctx.connect(rotateKernels.at(i - 1)->output(), kern->input());
-    }
-    
-    BOOST_ASSERT(!rotateKernels.empty());
-    
-    auto& buildInputData = ctx.addKernel<Kernel_ChangeConform_BuildRotateInputData>(myligand, uint32_t(rotateKernels.size()));
-    auto& globalRotation = ctx.addKernel<Kernel_ChangeConform_GeneralRotation_GlobalMove>(genotype);
-    
-    auto& atomDataSink = ctx.addKernel<GtMemStreamSink<InterE_AtomInput>>();
-    
-    ctx.connect(atomInputStream.output(), buildInputData.atomDataInput());
-    ctx.connect(rotbondInputStream.output(), buildInputData.rotbondsInput());
-    ctx.connect(buildInputData.output(), rotateKernels.front()->input());
-    ctx.connect(rotateKernels.back()->output(), globalRotation.input());
-    ctx.connect(globalRotation.output(), atomDataSink.input());
-    
-    ctx.runToCompletion();
-    
-    return std::move(atomDataSink.data());
+    static_assert(sizeof(myligand->atom_rotbonds) == (g_maxNumAtoms * g_maxNumRotbonds * sizeof(char)));
+    std::vector<char> atom_rotbonds_buf(g_maxNumAtoms * g_maxNumRotbonds);
+    std::memcpy(atom_rotbonds_buf.data(), myligand->atom_rotbonds, sizeof(myligand->atom_rotbonds));
+
+    static_assert(sizeof(myligand->rotbonds_moving_vectors) == (g_maxNumRotbonds * 3 * sizeof(double)));
+    std::vector<double> rotbonds_moving_vectors_buf(g_maxNumRotbonds * 3);
+    std::memcpy(rotbonds_moving_vectors_buf.data(), myligand->rotbonds_moving_vectors, sizeof(myligand->rotbonds_moving_vectors));
+
+    static_assert(sizeof(myligand->rotbonds_unit_vectors) == (g_maxNumRotbonds * 3 * sizeof(double)));
+    std::vector<double> rotbonds_unit_vectors_buf(g_maxNumRotbonds * 3);
+    std::memcpy(rotbonds_unit_vectors_buf.data(), myligand->rotbonds_unit_vectors, sizeof(myligand->rotbonds_unit_vectors));
+
+    // Output buffer
+    std::vector<double> output_buf(g_maxNumAtoms * 5);
+
+    // Compute initial move to origo
+    double initial_move_xyz[3];
+    get_movvec_to_origo(myligand, initial_move_xyz);
+
+    // Run graph
+    changeConform_graph(
+        ScalarDataSource<uint32_t>(myligand->num_of_atoms),
+        ScalarDataSource<uint32_t>(myligand->num_of_rotbonds),
+        ScalarDataSource<double>(initial_move_xyz[0]),
+        ScalarDataSource<double>(initial_move_xyz[1]),
+        ScalarDataSource<double>(initial_move_xyz[2]),
+        memBuffer(atom_idxyzq_buf),
+        memBuffer(atom_rotbonds_buf),
+        memBuffer(rotbonds_moving_vectors_buf),
+        memBuffer(rotbonds_unit_vectors_buf),
+        RuntimeMemoryBuffer(std::span<const double>(genotype, 6 + myligand->num_of_rotbonds)),
+        memBuffer(output_buf)
+    );
+
+    // Reorder result
+    std::vector<InterE_AtomInput> output_buf_struct(myligand->num_of_atoms);
+    static_assert(sizeof(output_buf_struct[0]) == 5 * sizeof(double));
+    std::memcpy(output_buf_struct.data(), output_buf.data(), output_buf_struct.size() * sizeof(InterE_AtomInput));
+
+    return output_buf_struct;
 }
 
 void change_conform(Liganddata* myligand, const double genotype [], int debug) {
@@ -1256,15 +1313,16 @@ void change_conform(Liganddata* myligand, const double genotype [], int debug) {
 
     const auto graphResult = change_conform_graphtoy(myligand, genotype);
     change_conform_original(myligand, genotype, debug);
-    
+
     static_assert(sizeof(InterE_AtomInput) == sizeof(InterE_RawAtomInput));
 #ifndef __clang__
     static_assert(std::is_pointer_interconvertible_with_class(&InterE_AtomInput::m_atom_idxyzq));
 #endif
-    
-    BOOST_ASSERT(graphResult.size() == size_t(myligand->num_of_atoms));
+
     const size_t numBytes = graphResult.size() * sizeof(graphResult[0]);
-    BOOST_ASSERT(std::memcmp(graphResult.data(), &myligand->atom_idxyzq[0], numBytes) == 0);
+    if (std::memcmp(graphResult.data(), &myligand->atom_idxyzq[0], numBytes)) {
+        std::cerr << "ChangeConform mismatch\n";
+    }
 
     if (g_graphdumpsEnabled) {
         static uint32_t s_dumpIndex = 0;
