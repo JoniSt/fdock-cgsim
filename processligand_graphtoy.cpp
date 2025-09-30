@@ -42,8 +42,8 @@ static constexpr size_t g_fifoDepthFor = std::max(size_t(1), g_aieAxiFifoDepthBy
 static bool g_graphdumpsEnabled = false;
 static const std::string g_dumpDirectory = "dumps";
 
-
-static void forEachDistanceID(auto&& fn) {
+template<typename Fn>
+static void forEachDistanceID(Fn&& fn) {
     double dist = 0;
 
     for (int i = 0; i < g_numDistanceIDs; ++i) {
