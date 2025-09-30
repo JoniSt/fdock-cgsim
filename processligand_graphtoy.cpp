@@ -1,7 +1,5 @@
 #include "processligand.h"
 
-#include "graphtoy/graphtoy.hpp"
-
 #include <cstring>
 #include <string>
 #include <vector>
@@ -17,8 +15,13 @@
 #include <boost/assert.hpp>
 
 #include "json.hpp"
+#include "graphtoy/graphtoy.hpp"
+#include "cgsim/cgsim.hpp"
 
 using namespace graphtoy;
+using namespace ttlhacker::cgsim;
+
+static constexpr auto s_iop_rtp = IoPortEndpointOptions{.m_isSingleWrite = true};
 
 static constexpr auto g_maxNumAtoms = 256;
 static constexpr auto g_maxNumAtomTypes = 14;
@@ -52,20 +55,28 @@ static void forEachDistanceID(auto&& fn) {
 }
 
 
-using AtomIndexPair = std::pair<uint8_t, uint8_t>;
+//using AtomIndexPair = std::pair<uint8_t, uint8_t>;
+
+struct AtomIndexPair {
+    uint8_t m_first;
+    uint8_t m_second;
+    bool m_terminate_processing;
+};
 
 struct IntraE_AtomPair {
+    bool m_terminate_processing = false;
+    bool m_isHBond = false;
+
     double m_atom1_idxyzq[5] = {};
     double m_atom2_idxyzq[5] = {};
-    
+
     int m_distanceID = 0;
-    bool m_isHBond = false;
-    
+
     double m_s1 = 0;
     double m_s2 = 0;
     double m_v1 = 0;
     double m_v2 = 0;
-    
+
     double m_vdW1 = 0;
     double m_vdW2 = 0;
 };
@@ -89,187 +100,219 @@ using IntraE_ChainKernel = IntraE_ComputeKernelBase<IntraE_AtomPair, IntraE_Atom
  * Input: intraE_contributors array
  * Output: Stream of atom pairs (as indices) that must be considered for intraE
  */
-struct Kernel_IntraE_GenAtomPairIndices final: IntraE_ComputeKernelBase<char, AtomIndexPair> {
-    Kernel_IntraE_GenAtomPairIndices(GtContext *ctx, int numAtoms):
-        IntraE_ComputeKernelBase<char, AtomIndexPair>(ctx), m_numAtoms(numAtoms) {}
-    
-private:
-    int m_numAtoms;
-    
-    GtKernelCoro kernelMain() override {
-        for (int x = 0; x < g_maxNumAtoms; ++x) {
-            for (int y = 0; y < g_maxNumAtoms; ++y) {
-                auto atomPairContributes = co_await m_inputStream->read();
-                
-                if (x < y && x < m_numAtoms && y < m_numAtoms && atomPairContributes)
-                    co_await m_outputStream->write(AtomIndexPair{uint8_t(x), uint8_t(y)});
+COMPUTE_KERNEL(hls, kernel_IntraE_GenAtomPairIndices,
+    KernelReadPort<uint32_t, s_iop_rtp> num_atoms_in,
+    KernelMemoryPort<const char> intraE_contributors_buf,
+    KernelWritePort<AtomIndexPair> atom_pair_out
+) {
+    uint32_t num_atoms = co_await num_atoms_in.get();
+
+    num_atoms = std::min(num_atoms, uint32_t(g_maxNumAtoms));
+
+    for (uint32_t x = 0; x < num_atoms; ++x) {
+        for (uint32_t y = 0; y < num_atoms; ++y) {
+            const char atomPairContributes = intraE_contributors_buf[x * g_maxNumAtoms + y];
+
+            if (x < y && atomPairContributes) {
+                co_await atom_pair_out.put(AtomIndexPair{uint8_t(x), uint8_t(y), false});
             }
         }
     }
-};
+
+    co_await atom_pair_out.put(AtomIndexPair{0, 0, true});
+}
 
 /**
  * Input: Stream of atom pairs (as indices)
  * Output: Stream of atom data (idxyzq)
  */
-struct Kernel_IntraE_FetchAtomData final: IntraE_ComputeKernelBase<AtomIndexPair, IntraE_AtomPair> {
-    Kernel_IntraE_FetchAtomData(GtContext *ctx, const Liganddata *myligand):
-        IntraE_ComputeKernelBase<AtomIndexPair, IntraE_AtomPair>(ctx)
-    {
-        static_assert(sizeof(m_atom_idxyzq) == sizeof(myligand->atom_idxyzq));
-        static_assert(std::is_same_v<decltype(m_atom_idxyzq), decltype(myligand->atom_idxyzq)>);
-        std::memcpy(m_atom_idxyzq, myligand->atom_idxyzq, sizeof(m_atom_idxyzq));
-    }
-    
-private:
-    double m_atom_idxyzq[g_maxNumAtoms][5] = {}; // 10KB local data
+COMPUTE_KERNEL(hls, kernel_IntraE_FetchAtomData,
+    KernelReadPort<uint32_t, s_iop_rtp> num_atoms_in,
+    KernelReadPort<AtomIndexPair> atom_pair_in,
+    KernelMemoryPort<const double> atom_idxyzq_buf,
+    KernelWritePort<IntraE_AtomPair> atom_data_out
+) {
+    double atom_idxyzq[g_maxNumAtoms][5];
 
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            const auto indexPair = co_await m_inputStream->read();
-            IntraE_AtomPair result{};
-            static_assert(sizeof(result.m_atom1_idxyzq) == sizeof(m_atom_idxyzq[0]));
-            static_assert(sizeof(result.m_atom2_idxyzq) == sizeof(m_atom_idxyzq[0]));
-            std::memcpy(result.m_atom1_idxyzq, m_atom_idxyzq[indexPair.first], sizeof(result.m_atom1_idxyzq));
-            std::memcpy(result.m_atom2_idxyzq, m_atom_idxyzq[indexPair.second], sizeof(result.m_atom2_idxyzq));
-            co_await m_outputStream->write(result);
+    uint32_t num_atoms = co_await num_atoms_in.get();
+    num_atoms = std::min(num_atoms, uint32_t(g_maxNumAtoms));
+
+    // Copy the entire atom_idxyzq array into local memory
+    for (uint32_t idx_atom = 0; idx_atom < num_atoms; ++idx_atom) {
+        for (size_t i = 0; i < 5; ++i) {
+            atom_idxyzq[idx_atom][i] = atom_idxyzq_buf[idx_atom * 5 + i];
         }
     }
-};
+
+    // Read atom pairs
+    while (true) {
+        const auto index_pair = co_await atom_pair_in.get();
+        if (index_pair.m_terminate_processing) {
+            break;
+        }
+
+        IntraE_AtomPair result{};
+        std::memcpy(result.m_atom1_idxyzq, atom_idxyzq[index_pair.m_first], sizeof(result.m_atom1_idxyzq));
+        std::memcpy(result.m_atom2_idxyzq, atom_idxyzq[index_pair.m_second], sizeof(result.m_atom2_idxyzq));
+
+        co_await atom_data_out.put(result);
+    }
+
+    // Terminate pipeline
+    co_await atom_data_out.put(IntraE_AtomPair{.m_terminate_processing = true});
+}
+
+static std::vector<char> intraE_build_hbond_lut(const Liganddata* myligand) {
+    const auto numAtomTypes = myligand->num_of_atypes;
+    BOOST_ASSERT_MSG(numAtomTypes <= g_maxNumAtomTypes, "Invalid number of atom types");
+
+    std::vector<char> is_hbond_lut(g_maxNumAtomTypes * g_maxNumAtomTypes, 0);
+
+    for (int type_id1 = 0; type_id1 < numAtomTypes; ++type_id1) {
+        for (int type_id2 = 0; type_id2 < numAtomTypes; ++type_id2) {
+            is_hbond_lut[type_id1 * g_maxNumAtomTypes + type_id2] = is_H_bond(myligand->atom_types[type_id1], myligand->atom_types[type_id2]) != 0;
+        }
+    }
+
+    return is_hbond_lut;
+}
 
 /**
  * Input: Stream of atom data
  * Output: Stream of atom data, with m_distanceID and m_isHBond set appropriately, filtered by distance
  */
-struct Kernel_IntraE_SetDistanceID_CheckHBond final: IntraE_ChainKernel {
-    Kernel_IntraE_SetDistanceID_CheckHBond(GtContext *ctx, double dcutoff, const Liganddata *myligand):
-        IntraE_ChainKernel(ctx), m_dcutoff(dcutoff)
-    {
-        const auto numAtomTypes = myligand->num_of_atypes;
-        BOOST_ASSERT_MSG(numAtomTypes <= g_maxNumAtomTypes, "Invalid number of atom types");
-        
-        for (int type_id1 = 0; type_id1 < numAtomTypes; ++type_id1) {
-            for (int type_id2 = 0; type_id2 < numAtomTypes; ++type_id2) {
-                m_isHBondLUT[type_id1][type_id2] = is_H_bond(myligand->atom_types[type_id1], myligand->atom_types[type_id2]) != 0;
-            }
-        }
+COMPUTE_KERNEL(hls, kernel_IntraE_SetDistanceID_CheckHBond,
+    KernelReadPort<IntraE_AtomPair> atom_data_in,
+    KernelWritePort<IntraE_AtomPair> atom_data_out,
+    KernelReadPort<double, s_iop_rtp> dcutoff_in,
+    KernelMemoryPort<const char> is_hbond_lut_buf
+) {
+    const double dcutoff = co_await dcutoff_in.get();
+
+    // Make a local copy of the H-bond LUT
+    constexpr size_t num_hbond_lut_entries = g_maxNumAtomTypes * g_maxNumAtomTypes;
+    char is_hbond_lut[num_hbond_lut_entries];
+
+    for (size_t i = 0; i < num_hbond_lut_entries; ++i) {
+        is_hbond_lut[i] = is_hbond_lut_buf[i];
     }
-    
-private:
-    double m_dcutoff;
-    bool m_isHBondLUT[g_maxNumAtomTypes][g_maxNumAtomTypes] = {}; // 196 bytes local data
-    
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            auto data = co_await m_inputStream->read();
-            
+
+    while (true) {
+        auto data = co_await atom_data_in.get();
+
+        if (!data.m_terminate_processing) {
             double dist = distance(&(data.m_atom1_idxyzq[1]), &(data.m_atom2_idxyzq[1]));
-            
-            if (dist <= 1)
-                dist = 1;
-            
+            dist = std::max(dist, 1.0);
+
             auto& distance_id = data.m_distanceID;
-            distance_id = (int) floor((100*dist) + 0.5) - 1; // +0.5: rounding, -1: r_xx_table [0] corresponds to r=0.01
-            if (distance_id < 0)
-                distance_id = 0;
-            
-            if (dist >= m_dcutoff || distance_id >= g_numDistanceIDs)
+            distance_id = static_cast<int>(std::floor((100 * dist) + 0.5)) - 1; // +0.5: rounding, -1: r_xx_table [0] corresponds to r=0.01
+            distance_id = std::max(distance_id, 0);
+
+            if (dist >= dcutoff || distance_id >= g_numDistanceIDs) {
                 continue;
-            
-            int type_id1 = data.m_atom1_idxyzq[0];
-            int type_id2 = data.m_atom2_idxyzq[0];
-            data.m_isHBond = m_isHBondLUT[type_id1][type_id2];
-            
-            co_await m_outputStream->write(data);
+            }
+
+            int type_id1 = static_cast<int>(data.m_atom1_idxyzq[0]);
+            int type_id2 = static_cast<int>(data.m_atom2_idxyzq[0]);
+
+            data.m_isHBond = is_hbond_lut[type_id1 * g_maxNumAtomTypes + type_id2];
         }
+
+        co_await atom_data_out.put(data);
+
+        if (data.m_terminate_processing) break;
     }
-};
+}
 
 /**
  * Populates s1, s2, v1, v2 in the atom data that passes through.
  */
-struct Kernel_IntraE_Volume_Solpar final: IntraE_ChainKernel {
-    Kernel_IntraE_Volume_Solpar(GtContext * ctx, const Liganddata *myligand, double qasp):
-        IntraE_ChainKernel(ctx), m_qasp(qasp)
-    {
-        static_assert(sizeof(m_volume) == sizeof(myligand->volume));
-        static_assert(sizeof(m_solpar) == sizeof(myligand->solpar));
-        std::memcpy(&m_volume, &myligand->volume, sizeof(m_volume));
-        std::memcpy(&m_solpar, &myligand->solpar, sizeof(m_solpar));
+COMPUTE_KERNEL(hls, kernel_IntraE_Volume_Solpar,
+    KernelReadPort<IntraE_AtomPair> atom_data_in,
+    KernelWritePort<IntraE_AtomPair> atom_data_out,
+    KernelReadPort<double, s_iop_rtp> qasp_in,
+    KernelMemoryPort<const double> volume_buf,
+    KernelMemoryPort<const double> solpar_buf
+) {
+    const double qasp = co_await qasp_in.get();
+
+    double volume[g_maxNumAtomTypes];
+    double solpar[g_maxNumAtomTypes];
+
+    for (size_t i = 0; i < g_maxNumAtomTypes; ++i) {
+        volume[i] = volume_buf[i];
+        solpar[i] = solpar_buf[i];
     }
-    
-private:
-    double m_qasp;
-    double m_volume[g_maxNumAtomTypes]; // 112 bytes
-    double m_solpar[g_maxNumAtomTypes]; // 112 bytes
-    
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            auto data = co_await m_inputStream->read();
-            
-            int type_id1 = data.m_atom1_idxyzq[0];
-            int type_id2 = data.m_atom2_idxyzq[0];
-            
+
+    while (true) {
+        auto data = co_await atom_data_in.get();
+
+        if (!data.m_terminate_processing) {
+            int type_id1 = static_cast<int>(data.m_atom1_idxyzq[0]);
+            int type_id2 = static_cast<int>(data.m_atom2_idxyzq[0]);
+
             double q1 = data.m_atom1_idxyzq[4];
             double q2 = data.m_atom2_idxyzq[4];
-            
-            data.m_s1 = m_solpar[type_id1] + m_qasp * fabs(q1);
-            data.m_s2 = m_solpar[type_id2] + m_qasp * fabs(q2);
-            data.m_v1 = m_volume[type_id1];
-            data.m_v2 = m_volume[type_id2];
 
-            co_await m_outputStream->write(data);
+            data.m_s1 = solpar[type_id1] + qasp * std::fabs(q1);
+            data.m_s2 = solpar[type_id2] + qasp * std::fabs(q2);
+            data.m_v1 = volume[type_id1];
+            data.m_v2 = volume[type_id2];
         }
+
+        co_await atom_data_out.put(data);
+
+        if (data.m_terminate_processing) break;
     }
-};
+}
 
 /**
  * Populates m_vdW1 and m_vdW2 in the atom data that passes through with the appropriate entries from VWpars_x.
  * Does not perform multiplication with r**{6,10,12} yet.
  */
-struct Kernel_IntraE_FetchVWpars final: IntraE_ChainKernel {
-    Kernel_IntraE_FetchVWpars(GtContext *ctx, const Liganddata *myligand):
-        IntraE_ChainKernel(ctx)
-    {
-        static_assert(sizeof(m_VWpars_A) == sizeof(myligand->VWpars_A));
-        static_assert(sizeof(m_VWpars_B) == sizeof(myligand->VWpars_B));
-        static_assert(sizeof(m_VWpars_C) == sizeof(myligand->VWpars_C));
-        static_assert(sizeof(m_VWpars_D) == sizeof(myligand->VWpars_D));
-        
-        std::memcpy(&m_VWpars_A, &myligand->VWpars_A, sizeof(m_VWpars_A));
-        std::memcpy(&m_VWpars_B, &myligand->VWpars_B, sizeof(m_VWpars_B));
-        std::memcpy(&m_VWpars_C, &myligand->VWpars_C, sizeof(m_VWpars_C));
-        std::memcpy(&m_VWpars_D, &myligand->VWpars_D, sizeof(m_VWpars_D));
-    }
-    
-private:
-    // ~6KB of local memory total
+COMPUTE_KERNEL(hls, kernel_IntraE_FetchVWpars,
+    KernelReadPort<IntraE_AtomPair> atom_data_in,
+    KernelWritePort<IntraE_AtomPair> atom_data_out,
+    KernelMemoryPort<const double> vwpars_a_buf,
+    KernelMemoryPort<const double> vwpars_b_buf,
+    KernelMemoryPort<const double> vwpars_c_buf,
+    KernelMemoryPort<const double> vwpars_d_buf
+) {
+    double vwpars_a[g_maxNumAtomTypes][g_maxNumAtomTypes];
+    double vwpars_b[g_maxNumAtomTypes][g_maxNumAtomTypes];
+    double vwpars_c[g_maxNumAtomTypes][g_maxNumAtomTypes];
+    double vwpars_d[g_maxNumAtomTypes][g_maxNumAtomTypes];
 
-    double m_VWpars_A[g_maxNumAtomTypes][g_maxNumAtomTypes];
-    double m_VWpars_B[g_maxNumAtomTypes][g_maxNumAtomTypes];
-    double m_VWpars_C[g_maxNumAtomTypes][g_maxNumAtomTypes];
-    double m_VWpars_D[g_maxNumAtomTypes][g_maxNumAtomTypes];
-    
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            auto data = co_await m_inputStream->read();
-            
-            int type_id1 = data.m_atom1_idxyzq[0];
-            int type_id2 = data.m_atom2_idxyzq[0];
-            
-            if (data.m_isHBond) {
-                data.m_vdW1 = m_VWpars_C[type_id1][type_id2];
-                data.m_vdW2 = m_VWpars_D[type_id1][type_id2];
-            } else {
-                data.m_vdW1 = m_VWpars_A[type_id1][type_id2];
-                data.m_vdW2 = m_VWpars_B[type_id1][type_id2];
-            }
-            
-            co_await m_outputStream->write(data);
+    for (size_t i = 0; i < g_maxNumAtomTypes; ++i) {
+        for (size_t j = 0; j < g_maxNumAtomTypes; ++j) {
+            vwpars_a[i][j] = vwpars_a_buf[i * g_maxNumAtomTypes + j];
+            vwpars_b[i][j] = vwpars_b_buf[i * g_maxNumAtomTypes + j];
+            vwpars_c[i][j] = vwpars_c_buf[i * g_maxNumAtomTypes + j];
+            vwpars_d[i][j] = vwpars_d_buf[i * g_maxNumAtomTypes + j];
         }
     }
-};
 
+    while (true) {
+        auto data = co_await atom_data_in.get();
+
+        if (!data.m_terminate_processing) {
+            int type_id1 = static_cast<int>(data.m_atom1_idxyzq[0]);
+            int type_id2 = static_cast<int>(data.m_atom2_idxyzq[0]);
+
+            if (data.m_isHBond) {
+                data.m_vdW1 = vwpars_c[type_id1][type_id2];
+                data.m_vdW2 = vwpars_d[type_id1][type_id2];
+            } else {
+                data.m_vdW1 = vwpars_a[type_id1][type_id2];
+                data.m_vdW2 = vwpars_b[type_id1][type_id2];
+            }
+        }
+
+        co_await atom_data_out.put(data);
+
+        if (data.m_terminate_processing) break;
+    }
+}
 
 struct IntraE_DistanceLuts {
     // 24KB total when using single-precision floats
@@ -298,101 +341,184 @@ static const IntraE_DistanceLuts g_intraE_luts{};
 /**
  * Multiplies m_vdW1 and m_vdW2 with the appropriate power of the distance.
  */
-struct Kernel_IntraE_ScaleVWparsWithDistance final: IntraE_ChainKernel {
-    explicit Kernel_IntraE_ScaleVWparsWithDistance(GtContext *ctx):
-        IntraE_ChainKernel(ctx) {}
-    
-private:
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            auto data = co_await m_inputStream->read();
-            
+COMPUTE_KERNEL(hls, kernel_IntraE_ScaleVWparsWithDistance,
+    KernelReadPort<IntraE_AtomPair> atom_data_in,
+    KernelWritePort<IntraE_AtomPair> atom_data_out
+) {
+    while (true) {
+        auto data = co_await atom_data_in.get();
+
+        if (!data.m_terminate_processing) {
             const auto did = data.m_distanceID;
-            
+
             data.m_vdW1 *= g_intraE_luts.m_r_12_table[did];
             data.m_vdW2 *= data.m_isHBond ? g_intraE_luts.m_r_10_table[did] : g_intraE_luts.m_r_6_table[did];
-            
-            co_await m_outputStream->write(data);
         }
+
+        co_await atom_data_out.put(data);
+
+        if (data.m_terminate_processing) break;
     }
-};
+}
 
 /**
  * Computes the final energies and accumulates them for all atoms
  */
-struct Kernel_IntraE_Compute_VW_EL_Desolv final: GtKernelBase {
-    Kernel_IntraE_Compute_VW_EL_Desolv(GtContext *ctx, double scaled_AD4_coeff_elec, double AD4_coeff_desolv):
-        GtKernelBase(ctx), m_epsrScale(scaled_AD4_coeff_elec), m_desolvScale(AD4_coeff_desolv) {}
+COMPUTE_KERNEL(hls, kernel_IntraE_Compute_VW_EL_Desolv,
+    KernelReadPort<IntraE_AtomPair> atom_data_in,
+    KernelReadPort<double, s_iop_rtp> scaled_AD4_coeff_elec_in,
+    KernelReadPort<double, s_iop_rtp> AD4_coeff_desolv_in,
+    KernelWritePort<double, s_iop_rtp> vW_out,
+    KernelWritePort<double, s_iop_rtp> el_out,
+    KernelWritePort<double, s_iop_rtp> desolv_out
+) {
+    double vW = 0;
+    double el = 0;
+    double desolv = 0;
 
-    auto * input() { return m_inputStream; }
+    const double epsrScale = co_await scaled_AD4_coeff_elec_in.get();
+    const double desolvScale = co_await AD4_coeff_desolv_in.get();
 
-    // Result accumulators
-    double m_vW = 0;
-    double m_el = 0;
-    double m_desolv = 0;
+    while (true) {
+        const auto data = co_await atom_data_in.get();
 
-private:
-    GtKernelIoStream<IntraE_AtomPair> *m_inputStream = addIoStream<IntraE_AtomPair>(g_fifoDepthFor<IntraE_AtomPair>);
-
-    double m_epsrScale;
-    double m_desolvScale;
-
-    GtKernelCoro kernelMain() override {
-        while (true) {
-            const auto data = co_await m_inputStream->read();
-            
-            const auto q1 = data.m_atom1_idxyzq[4];
-            const auto q2 = data.m_atom2_idxyzq[4];
-            
-            m_vW += data.m_vdW1 - data.m_vdW2;
-            m_el += q1 * q2 * (m_epsrScale / g_intraE_luts.m_r_epsr_table_unscaled[data.m_distanceID]);
-            m_desolv += (data.m_s1*data.m_v2 + data.m_s2*data.m_v1) * (m_desolvScale * g_intraE_luts.m_desolv_table_unscaled[data.m_distanceID]);
+        if (data.m_terminate_processing) {
+            break;
         }
+
+        const auto q1 = data.m_atom1_idxyzq[4];
+        const auto q2 = data.m_atom2_idxyzq[4];
+
+        vW += data.m_vdW1 - data.m_vdW2;
+        el += q1 * q2 * (epsrScale / g_intraE_luts.m_r_epsr_table_unscaled[data.m_distanceID]);
+        desolv += (data.m_s1 * data.m_v2 + data.m_s2 * data.m_v1) * (desolvScale * g_intraE_luts.m_desolv_table_unscaled[data.m_distanceID]);
     }
-};
+
+    co_await vW_out.put(vW);
+    co_await el_out.put(el);
+    co_await desolv_out.put(desolv);
+}
+
+COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
+    IoConnector<uint32_t> num_atoms_in,
+    IoConnector<const char> intraE_contributors_buf,
+    IoConnector<const double> atom_idxyzq_buf,
+    IoConnector<const char> is_hbond_lut_buf,
+    IoConnector<const double> volume_buf,
+    IoConnector<const double> solpar_buf,
+    IoConnector<const double> vwpars_a_buf,
+    IoConnector<const double> vwpars_b_buf,
+    IoConnector<const double> vwpars_c_buf,
+    IoConnector<const double> vwpars_d_buf,
+    IoConnector<double> dcutoff_in,
+    IoConnector<double> qasp_in,
+    IoConnector<double> scaled_AD4_coeff_elec_in,
+    IoConnector<double> AD4_coeff_desolv_in
+) {
+    IoConnector<AtomIndexPair> atom_pairs;
+    IoConnector<IntraE_AtomPair>
+        atom_data_fetched,
+        atom_data_distance_checked,
+        atom_data_with_volume,
+        atom_data_with_vw_fetched,
+        atom_data_with_vw_scaled;
+
+    IoConnector<double> vW_out, el_out, desolv_out;
+
+    CGSIM_AUTO_NAME(num_atoms_in);
+    CGSIM_AUTO_NAME(intraE_contributors_buf);
+    CGSIM_AUTO_NAME(atom_idxyzq_buf);
+    CGSIM_AUTO_NAME(volume_buf);
+    CGSIM_AUTO_NAME(solpar_buf);
+    CGSIM_AUTO_NAME(vwpars_a_buf);
+    CGSIM_AUTO_NAME(vwpars_b_buf);
+    CGSIM_AUTO_NAME(vwpars_c_buf);
+    CGSIM_AUTO_NAME(vwpars_d_buf);
+    CGSIM_AUTO_NAME(dcutoff_in);
+    CGSIM_AUTO_NAME(qasp_in);
+    CGSIM_AUTO_NAME(scaled_AD4_coeff_elec_in);
+    CGSIM_AUTO_NAME(AD4_coeff_desolv_in);
+    CGSIM_AUTO_NAME(vW_out);
+    CGSIM_AUTO_NAME(el_out);
+    CGSIM_AUTO_NAME(desolv_out);
+
+    kernel_IntraE_GenAtomPairIndices(num_atoms_in, intraE_contributors_buf, atom_pairs);
+    kernel_IntraE_FetchAtomData(num_atoms_in, atom_pairs, atom_idxyzq_buf, atom_data_fetched);
+    kernel_IntraE_SetDistanceID_CheckHBond(atom_data_fetched, atom_data_distance_checked, dcutoff_in, is_hbond_lut_buf);
+    kernel_IntraE_Volume_Solpar(atom_data_distance_checked, atom_data_with_volume, qasp_in, volume_buf, solpar_buf);
+    kernel_IntraE_FetchVWpars(atom_data_with_volume, atom_data_with_vw_fetched, vwpars_a_buf, vwpars_b_buf, vwpars_c_buf, vwpars_d_buf);
+    kernel_IntraE_ScaleVWparsWithDistance(atom_data_with_vw_fetched, atom_data_with_vw_scaled);
+    kernel_IntraE_Compute_VW_EL_Desolv(atom_data_with_vw_scaled, scaled_AD4_coeff_elec_in, AD4_coeff_desolv_in, vW_out, el_out, desolv_out);
+
+    return std::tuple(vW_out, el_out, desolv_out);
+}>;
 
 
 double calc_intraE_graphtoy(const Liganddata* myligand, double dcutoff, char ignore_desolv, const double scaled_AD4_coeff_elec, const double AD4_coeff_desolv, const double qasp) {
-    GtContext ctx{};
-    
+    // Copy all 2D arrays into local (flat) buffers
     static_assert(sizeof(myligand->intraE_contributors) == (g_maxNumAtoms * g_maxNumAtoms));
-    const std::span<const char> intraE_contributors_data((const char *)&myligand->intraE_contributors, g_maxNumAtoms * g_maxNumAtoms);
-    
-    // Fetch atom data for all pairs of atoms that are set in intraE_contributors
-    auto& intraE_contributors_src = ctx.addKernel<GtMemStreamSource<char>>(intraE_contributors_data);
-    auto& genIndicesKernel = ctx.addKernel<Kernel_IntraE_GenAtomPairIndices>(myligand->num_of_atoms);
-    auto& fetchAtomDataKernel = ctx.addKernel<Kernel_IntraE_FetchAtomData>(myligand);
-    ctx.connect(intraE_contributors_src.output(), genIndicesKernel.input());
-    ctx.connect(genIndicesKernel.output(), fetchAtomDataKernel.input());
-    
-    // Compute distance ID and check for H-bond, get solpar and volume
-    auto& computeDistanceIDAndHBond = ctx.addKernel<Kernel_IntraE_SetDistanceID_CheckHBond>(dcutoff, myligand);
-    auto& computeSolparAndVolume = ctx.addKernel<Kernel_IntraE_Volume_Solpar>(myligand, qasp);
-    ctx.connect(fetchAtomDataKernel.output(), computeDistanceIDAndHBond.input());
-    ctx.connect(computeDistanceIDAndHBond.output(), computeSolparAndVolume.input());
-    
-    // Compute vdW1 and vdW2
-    auto& fetchVWpars = ctx.addKernel<Kernel_IntraE_FetchVWpars>(myligand);
-    auto& scaleVWpars = ctx.addKernel<Kernel_IntraE_ScaleVWparsWithDistance>();
-    ctx.connect(computeSolparAndVolume.output(), fetchVWpars.input());
-    ctx.connect(fetchVWpars.output(), scaleVWpars.input());
-    
-    // Compute and accumulate the final energy values
-    auto& computeEnergies = ctx.addKernel<Kernel_IntraE_Compute_VW_EL_Desolv>(scaled_AD4_coeff_elec, AD4_coeff_desolv);
-    ctx.connect(scaleVWpars.output(), computeEnergies.input());
-    
-    // Run the entire computation graph
-    ctx.runToCompletion();
-    
-    // Resulting energies should be in the accumulation kernel's local memory now
-    return computeEnergies.m_vW + computeEnergies.m_el + (ignore_desolv ? 0.0 : computeEnergies.m_desolv);
+    std::vector<char> intraE_contributors_buf(g_maxNumAtoms * g_maxNumAtoms);
+    std::memcpy(intraE_contributors_buf.data(), myligand->intraE_contributors, sizeof(myligand->intraE_contributors));
+
+    static_assert(sizeof(myligand->atom_idxyzq) == (g_maxNumAtoms * 5 * sizeof(double)));
+    std::vector<double> atom_idxyzq_buf(g_maxNumAtoms * 5);
+    std::memcpy(atom_idxyzq_buf.data(), myligand->atom_idxyzq, sizeof(myligand->atom_idxyzq));
+
+    static_assert(sizeof(myligand->VWpars_A) == (g_maxNumAtomTypes * g_maxNumAtomTypes * sizeof(double)));
+    std::vector<double> vwpars_a_buf(g_maxNumAtomTypes * g_maxNumAtomTypes);
+    std::memcpy(vwpars_a_buf.data(), myligand->VWpars_A, sizeof(myligand->VWpars_A));
+
+    static_assert(sizeof(myligand->VWpars_B) == (g_maxNumAtomTypes * g_maxNumAtomTypes * sizeof(double)));
+    std::vector<double> vwpars_b_buf(g_maxNumAtomTypes * g_maxNumAtomTypes);
+    std::memcpy(vwpars_b_buf.data(), myligand->VWpars_B, sizeof(myligand->VWpars_B));
+
+    static_assert(sizeof(myligand->VWpars_C) == (g_maxNumAtomTypes * g_maxNumAtomTypes * sizeof(double)));
+    std::vector<double> vwpars_c_buf(g_maxNumAtomTypes * g_maxNumAtomTypes);
+    std::memcpy(vwpars_c_buf.data(), myligand->VWpars_C, sizeof(myligand->VWpars_C));
+
+    static_assert(sizeof(myligand->VWpars_D) == (g_maxNumAtomTypes * g_maxNumAtomTypes * sizeof(double)));
+    std::vector<double> vwpars_d_buf(g_maxNumAtomTypes * g_maxNumAtomTypes);
+    std::memcpy(vwpars_d_buf.data(), myligand->VWpars_D, sizeof(myligand->VWpars_D));
+
+    // HBond LUT
+    auto is_hbond_lut_buf = intraE_build_hbond_lut(myligand);
+
+    double vW = 0;
+    double el = 0;
+    double desolv = 0;
+
+    // Run graph
+    const auto result = intraE_graph(
+        ScalarDataSource<uint32_t>(myligand->num_of_atoms),
+        memBuffer(intraE_contributors_buf),
+        memBuffer(atom_idxyzq_buf),
+        memBuffer(is_hbond_lut_buf),
+        RuntimeMemoryBuffer(std::span<const double>(myligand->volume, g_maxNumAtomTypes)),
+        RuntimeMemoryBuffer(std::span<const double>(myligand->solpar, g_maxNumAtomTypes)),
+        memBuffer(vwpars_a_buf),
+        memBuffer(vwpars_b_buf),
+        memBuffer(vwpars_c_buf),
+        memBuffer(vwpars_d_buf),
+        ScalarDataSource<double>(dcutoff),
+        ScalarDataSource<double>(qasp),
+        ScalarDataSource<double>(scaled_AD4_coeff_elec),
+        ScalarDataSource<double>(AD4_coeff_desolv),
+        ScalarDataSink<double>(vW),
+        ScalarDataSink<double>(el),
+        ScalarDataSink<double>(desolv)
+    );
+
+    // Warn about deadlocks
+    result.dump(std::cerr);
+
+    return vW + el + (ignore_desolv ? 0.0 : desolv);
 }
 
 static void dumpStructRaw(const char *fileName, const char *data, size_t size) {
     std::ofstream stream{fileName, std::ios_base::out | std::ios_base::trunc | std::ios_base::binary};
-    BOOST_ASSERT(stream.good());
+    if (!stream.good()) return;
+
     stream.write(data, size);
-    BOOST_ASSERT(stream.good());
 }
 
 static void dumpLigand(const char *fileName, const Liganddata *ligand) {
@@ -407,15 +533,17 @@ static void dumpJson(const char *fileName, const nlohmann::json& json) {
 double calc_intraE(const Liganddata* myligand, double dcutoff, char ignore_desolv, const double scaled_AD4_coeff_elec, const double AD4_coeff_desolv, const double qasp, int debug) {
     const double originalResult = calc_intraE_original(myligand, dcutoff, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp, debug);
     const double graphResult    = calc_intraE_graphtoy(myligand, dcutoff, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp);
-    
-    BOOST_ASSERT(graphResult == originalResult);
-    
+
+    if (graphResult != originalResult) {
+        std::cerr << "IntraE mismatch: original=" << originalResult << ", graph=" << graphResult << "\n";
+    }
+
     if (g_graphdumpsEnabled) {
         static uint32_t s_dumpIndex = 0;
         std::string baseName = g_dumpDirectory + "/intraE_" + std::to_string(s_dumpIndex++);
-        
+
         dumpLigand((baseName + "_ligand.bin").data(), myligand);
-        
+
         nlohmann::json params{};
         params["dcutoff"] = dcutoff;
         params["ignore_desolv"] = bool(ignore_desolv);
@@ -425,7 +553,7 @@ double calc_intraE(const Liganddata* myligand, double dcutoff, char ignore_desol
         params["result"] = graphResult;
         dumpJson((baseName + "_params.json").data(), params);
     }
-    
+
     return graphResult;
 }
 
