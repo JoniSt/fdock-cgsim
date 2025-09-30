@@ -11,6 +11,11 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Workaround for Clang tool being unable to find the standard headers if GCC stdlib is used
+if(CMAKE_EXPORT_COMPILE_COMMANDS)
+    set(CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES})
+endif()
+
 add_executable(fdock_cpu)
 
 target_sources(fdock_cpu PRIVATE
