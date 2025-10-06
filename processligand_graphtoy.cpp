@@ -30,7 +30,6 @@ static constexpr auto g_desolvSigma = 3.6;
 static constexpr auto g_outOfGridPenalty = 1 << 24;
 static constexpr auto g_peratomOutOfGridPenalty = 100000;
 static constexpr auto g_maxNumRotbonds = 32;
-static constexpr auto g_numChangeConformRotateKernels = 4;
 
 // The AIE's AXI4 FIFOs have a depth of four 32-bit values (16 bytes total).
 static constexpr size_t g_aieAxiFifoDepthBytes = 16;
@@ -739,8 +738,6 @@ COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
     enum class GridType { ATOM, ELECTROSTATIC, DESOLVATION };
     using enum GridType;
 
-    const auto getCubeElem = [&] { return dram_data_in.get(); };
-
     while (true) {
         const auto data = co_await atom_data_in.get();
 
@@ -755,14 +752,14 @@ COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
             for (const GridType t: {ATOM, ELECTROSTATIC, DESOLVATION}) {
                 double cube[2][2][2];
 
-                cube [0][0][0] = co_await getCubeElem();
-                cube [1][0][0] = co_await getCubeElem();
-                cube [0][1][0] = co_await getCubeElem();
-                cube [1][1][0] = co_await getCubeElem();
-                cube [0][0][1] = co_await getCubeElem();
-                cube [1][0][1] = co_await getCubeElem();
-                cube [0][1][1] = co_await getCubeElem();
-                cube [1][1][1] = co_await getCubeElem();
+                cube [0][0][0] = co_await dram_data_in.get();
+                cube [1][0][0] = co_await dram_data_in.get();
+                cube [0][1][0] = co_await dram_data_in.get();
+                cube [1][1][0] = co_await dram_data_in.get();
+                cube [0][0][1] = co_await dram_data_in.get();
+                cube [1][0][1] = co_await dram_data_in.get();
+                cube [0][1][1] = co_await dram_data_in.get();
+                cube [1][1][1] = co_await dram_data_in.get();
 
                 const double interpolated = trilin_interpol(cube, data.m_weights);
 
