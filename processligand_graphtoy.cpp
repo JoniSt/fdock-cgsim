@@ -14,6 +14,7 @@
 
 #include <boost/assert.hpp>
 
+#include "fdock_intraE_luts.hpp"
 #include "miscellaneous_inline.h"
 #include "processligand_inline.h"
 #include "processligand.h"
@@ -27,8 +28,6 @@ static constexpr auto s_iop_rtp = IoPortEndpointOptions{.m_isSingleWrite = true}
 static constexpr auto g_maxNumAtoms = 256;
 static constexpr auto g_maxNumAtomTypes = 14;
 static constexpr auto g_numDistanceIDs = 2048;
-static constexpr auto g_distanceIDStep = 0.01;
-static constexpr auto g_desolvSigma = 3.6;
 static constexpr auto g_outOfGridPenalty = 1 << 24;
 static constexpr auto g_peratomOutOfGridPenalty = 100000;
 static constexpr auto g_maxNumRotbonds = 32;
@@ -43,17 +42,6 @@ static constexpr size_t g_fifoDepthFor = std::max(size_t(1), g_aieAxiFifoDepthBy
 
 static bool g_graphdumpsEnabled = false;
 static const std::string g_dumpDirectory = "dumps";
-
-template<typename Fn>
-static void forEachDistanceID(Fn&& fn) {
-    double dist = 0;
-
-    for (int i = 0; i < g_numDistanceIDs; ++i) {
-        dist += g_distanceIDStep;
-        fn(i, dist);
-    }
-}
-
 
 //using AtomIndexPair = std::pair<uint8_t, uint8_t>;
 
@@ -300,37 +288,6 @@ COMPUTE_KERNEL(hls, kernel_IntraE_FetchVWpars,
     }
 }
 
-struct IntraE_DistanceLutsR {
-    // 24KB total when using single-precision floats
-    double m_r_6_table[g_numDistanceIDs];
-    double m_r_10_table[g_numDistanceIDs];
-    double m_r_12_table[g_numDistanceIDs];
-
-    IntraE_DistanceLutsR() {
-        forEachDistanceID([this](int i, double dist) {
-            m_r_6_table[i] = 1/pow(dist,6);
-            m_r_10_table[i] = 1/pow(dist,10);
-            m_r_12_table[i] = 1/pow(dist,12);
-        });
-    }
-};
-
-struct IntraE_DistanceLutsEpsrDesolv {
-    // 16KB total with single-precision floats
-    double m_r_epsr_table_unscaled[g_numDistanceIDs];
-    double m_desolv_table_unscaled[g_numDistanceIDs];
-
-    IntraE_DistanceLutsEpsrDesolv() {
-        forEachDistanceID([this](int i, double dist) {
-            m_r_epsr_table_unscaled[i] = dist*calc_ddd_Mehler_Solmajer(dist);
-            m_desolv_table_unscaled[i] = exp(-1*dist*dist/(2*g_desolvSigma*g_desolvSigma));
-        });
-    }
-};
-
-static const IntraE_DistanceLutsR g_intraE_luts_r{};
-static const IntraE_DistanceLutsEpsrDesolv g_intraE_luts_epsr_desolv{};
-
 /**
  * Multiplies m_vdW1 and m_vdW2 with the appropriate power of the distance.
  */
@@ -344,8 +301,8 @@ COMPUTE_KERNEL(hls, kernel_IntraE_ScaleVWparsWithDistance,
         if (!data.m_terminate_processing) {
             const auto did = data.m_distanceID;
 
-            data.m_vdW1 *= g_intraE_luts_r.m_r_12_table[did];
-            data.m_vdW2 *= data.m_isHBond ? g_intraE_luts_r.m_r_10_table[did] : g_intraE_luts_r.m_r_6_table[did];
+            data.m_vdW1 *= fdock_luts::intra_r_12_table[did];
+            data.m_vdW2 *= (data.m_isHBond ? fdock_luts::intra_r_10_table[did] : fdock_luts::intra_r_6_table[did]);
         }
 
         co_await atom_data_out.put(data);
@@ -386,11 +343,11 @@ COMPUTE_KERNEL(hls, kernel_IntraE_Compute_VW_EL_Desolv,
 
         el +=
             q1 * q2
-            * (epsrScale / g_intraE_luts_epsr_desolv.m_r_epsr_table_unscaled[data.m_distanceID]);
+            * (epsrScale / fdock_luts::intra_r_epsr_table_unscaled[data.m_distanceID]);
 
         desolv +=
             (data.m_s1 * data.m_v2 + data.m_s2 * data.m_v1)
-            * (desolvScale * g_intraE_luts_epsr_desolv.m_desolv_table_unscaled[data.m_distanceID]);
+            * (desolvScale * fdock_luts::intra_desolv_table_unscaled[data.m_distanceID]);
     }
 
     co_await vW_out.put(vW);

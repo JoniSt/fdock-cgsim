@@ -57,3 +57,24 @@ target_link_directories(fdock_cpu PRIVATE
 
 target_compile_options(fdock_cpu PRIVATE -Wall)
 target_link_libraries(fdock_cpu PRIVATE m cgsim)
+
+add_executable(gen_fdock_luts tools/gen_fdock_luts.cpp)
+target_include_directories(gen_fdock_luts PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+set(GENERATED_HEADER ${CMAKE_CURRENT_BINARY_DIR}/fdock_intraE_luts.hpp)
+
+add_custom_command(
+    OUTPUT ${GENERATED_HEADER}
+    COMMAND gen_fdock_luts > ${GENERATED_HEADER}
+    DEPENDS gen_fdock_luts
+    COMMENT "Generating IntraE LUT header"
+    VERBATIM
+)
+
+add_custom_target(fdock_intraE_luts_header ALL
+    DEPENDS ${GENERATED_HEADER}
+)
+
+add_dependencies(fdock_cpu fdock_intraE_luts_header)
+
+target_include_directories(fdock_cpu PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
