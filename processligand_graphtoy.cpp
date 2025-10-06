@@ -300,29 +300,36 @@ COMPUTE_KERNEL(hls, kernel_IntraE_FetchVWpars,
     }
 }
 
-struct IntraE_DistanceLuts {
+struct IntraE_DistanceLutsR {
     // 24KB total when using single-precision floats
     double m_r_6_table[g_numDistanceIDs];
     double m_r_10_table[g_numDistanceIDs];
     double m_r_12_table[g_numDistanceIDs];
 
-    // 16KB total with single-precision floats
-    double m_r_epsr_table_unscaled[g_numDistanceIDs];
-    double m_desolv_table_unscaled[g_numDistanceIDs];
-
-    IntraE_DistanceLuts() {
+    IntraE_DistanceLutsR() {
         forEachDistanceID([this](int i, double dist) {
             m_r_6_table[i] = 1/pow(dist,6);
             m_r_10_table[i] = 1/pow(dist,10);
             m_r_12_table[i] = 1/pow(dist,12);
+        });
+    }
+};
 
+struct IntraE_DistanceLutsEpsrDesolv {
+    // 16KB total with single-precision floats
+    double m_r_epsr_table_unscaled[g_numDistanceIDs];
+    double m_desolv_table_unscaled[g_numDistanceIDs];
+
+    IntraE_DistanceLutsEpsrDesolv() {
+        forEachDistanceID([this](int i, double dist) {
             m_r_epsr_table_unscaled[i] = dist*calc_ddd_Mehler_Solmajer(dist);
             m_desolv_table_unscaled[i] = exp(-1*dist*dist/(2*g_desolvSigma*g_desolvSigma));
         });
     }
 };
 
-static const IntraE_DistanceLuts g_intraE_luts{};
+static const IntraE_DistanceLutsR g_intraE_luts_r{};
+static const IntraE_DistanceLutsEpsrDesolv g_intraE_luts_epsr_desolv{};
 
 /**
  * Multiplies m_vdW1 and m_vdW2 with the appropriate power of the distance.
@@ -337,8 +344,8 @@ COMPUTE_KERNEL(hls, kernel_IntraE_ScaleVWparsWithDistance,
         if (!data.m_terminate_processing) {
             const auto did = data.m_distanceID;
 
-            data.m_vdW1 *= g_intraE_luts.m_r_12_table[did];
-            data.m_vdW2 *= data.m_isHBond ? g_intraE_luts.m_r_10_table[did] : g_intraE_luts.m_r_6_table[did];
+            data.m_vdW1 *= g_intraE_luts_r.m_r_12_table[did];
+            data.m_vdW2 *= data.m_isHBond ? g_intraE_luts_r.m_r_10_table[did] : g_intraE_luts_r.m_r_6_table[did];
         }
 
         co_await atom_data_out.put(data);
@@ -376,8 +383,14 @@ COMPUTE_KERNEL(hls, kernel_IntraE_Compute_VW_EL_Desolv,
         const auto q2 = data.m_atom2_idxyzq[4];
 
         vW += data.m_vdW1 - data.m_vdW2;
-        el += q1 * q2 * (epsrScale / g_intraE_luts.m_r_epsr_table_unscaled[data.m_distanceID]);
-        desolv += (data.m_s1 * data.m_v2 + data.m_s2 * data.m_v1) * (desolvScale * g_intraE_luts.m_desolv_table_unscaled[data.m_distanceID]);
+
+        el +=
+            q1 * q2
+            * (epsrScale / g_intraE_luts_epsr_desolv.m_r_epsr_table_unscaled[data.m_distanceID]);
+
+        desolv +=
+            (data.m_s1 * data.m_v2 + data.m_s2 * data.m_v1)
+            * (desolvScale * g_intraE_luts_epsr_desolv.m_desolv_table_unscaled[data.m_distanceID]);
     }
 
     co_await vW_out.put(vW);
