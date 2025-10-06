@@ -40,8 +40,6 @@ double angle_of_vectors(const double [], const double []);
 
 void vec_crossprod(const double [], const double [], double []);
 
-void get_trilininterpol_weights(double [][2][2], const double, const double, const double);
-
 int stricmp(const char*, const char*);
 
 #ifdef __cplusplus

@@ -98,6 +98,22 @@ static inline void rotate(double point [], const double movvec [], const double 
 	point [2] = point [2] + movvec [2];
 }
 
+
+static inline void get_trilininterpol_weights(double weights [][2][2], const double dx, const double dy, const double dz)
+//The function calculates the weights for trilinear interpolation based on the location of the point inside
+//the cube which is given by the second, third and fourth parameters.
+{
+
+	weights [0][0][0] = (1-dx) * (1-dy) * (1-dz);
+	weights [1][0][0] = dx     * (1-dy) * (1-dz);
+	weights [0][1][0] = (1-dx) * dy     * (1-dz);
+	weights [1][1][0] = dx     * dy     * (1-dz);
+	weights [0][0][1] = (1-dx) * (1-dy) * dz;
+	weights [1][0][1] = dx     * (1-dy) * dz;
+	weights [0][1][1] = (1-dx) * dy     * dz;
+	weights [1][1][1] = dx     * dy     * dz;
+}
+
 #ifdef __cplusplus
 }
 #endif
