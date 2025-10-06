@@ -15,6 +15,7 @@
 #include <string.h>
 #include <math.h>
 
+#include "processligand_inline.h"
 #include "defines.h"
 #include "processgrid.h"
 #include "miscellaneous.h"
@@ -121,8 +122,6 @@ void change_conform         (Liganddata*, const double [], int);
 void change_conform_original(Liganddata*, const double [], int);
 
 double calc_rmsd(const Liganddata*, const Liganddata*, const int);
-
-double calc_ddd_Mehler_Solmajer(double);
 
 int is_H_bond(const char*, const char*);
 

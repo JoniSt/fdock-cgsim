@@ -1038,26 +1038,6 @@ double calc_rmsd(const Liganddata* myligand_ref, const Liganddata* myligand, con
 	return (sqrt(sumdist2/myligand->num_of_atoms));
 }
 
-double calc_ddd_Mehler_Solmajer(double distance)
- //The function returns the value of the distance-dependend dielectric function.
-//(Whole function copied from AutoDock...)
-{
-
-    double epsilon = 1.0L;
-    double lambda = 0.003627L;
-    double epsilon0 = 78.4L;
-    double A = -8.5525L;
-    double B;
-    B = epsilon0 - A;
-    double rk= 7.7839L;
-    double lambda_B;
-    lambda_B = -lambda * B;
-
-    epsilon = A + B / (1.0L + rk*exp(lambda_B * distance));
-
-    return epsilon;
-}
-
 int is_H_bond(const char* atype1, const char* atype2)
 //Returns 1 if a H-bond can exist between the atoms with atom code atype1 and atype2, otherwise it returns 0.
 {
