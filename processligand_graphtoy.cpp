@@ -14,6 +14,7 @@
 
 #include <boost/assert.hpp>
 
+#include "miscellaneous_inline.h"
 #include "processligand.h"
 #include "cgsim/cgsim.hpp"
 #include "json.hpp"
