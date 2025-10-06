@@ -17,25 +17,12 @@
 #include <stdlib.h>
 #include <ctype.h>
 
+#include "miscellaneous_inline.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct
-//Struct which describes a quaternion.
-{
-	double q;
-	double x;
-	double y;
-	double z;
-} Quaternion;
-
-#define trilin_interpol(cube, weights) (cube[0][0][0]*weights[0][0][0] + cube[1][0][0]*weights[1][0][0] +	\
-									    cube[0][1][0]*weights[0][1][0] + cube[1][1][0]*weights[1][1][0] +	\
-									    cube[0][0][1]*weights[0][0][1] + cube[1][0][1]*weights[1][0][1] +	\
-									    cube[0][1][1]*weights[0][1][1] + cube[1][1][1]*weights[1][1][1])
-//macro that calculates the trilinear interpolation, the first parameter is a 2*2*2 array of the values of the function
-//in the vertices of the cube, and the second one is a 2*2*2 array of the interpolation weights
 
 int float2fracint(double, int);
 
@@ -47,11 +34,7 @@ double myrand(void);
 
 unsigned int myrand_int(unsigned int);
 
-double distance(const double [], const double []);
-
 void vec_point2line(const double [], const double [], const double [], double []);
-
-void rotate(double [], const double [], const double [], const double*, int);
 
 double angle_of_vectors(const double [], const double []);
 

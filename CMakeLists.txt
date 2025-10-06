@@ -32,6 +32,7 @@ target_sources(fdock_cpu PRIVATE
     defines.h
     getparameters.h
     miscellaneous.h
+    miscellaneous_inline.h
     performdocking.h
     processgrid.h
     processligand.h

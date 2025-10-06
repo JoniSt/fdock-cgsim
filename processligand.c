@@ -972,7 +972,7 @@ void change_conform_original(Liganddata* myligand, const double genotype [], int
 					if (debug == 1)
 						printf("around rotatable bond %d\n", rotbond_id);
 
-					rotate(&(myligand->atom_idxyzq [atom_id][1]), myligand->rotbonds_moving_vectors [rotbond_id], myligand->rotbonds_unit_vectors [rotbond_id], &(genotype [6+rotbond_id]), debug);	//rotating
+					rotate(&(myligand->atom_idxyzq [atom_id][1]), myligand->rotbonds_moving_vectors [rotbond_id], myligand->rotbonds_unit_vectors [rotbond_id], &(genotype [6+rotbond_id]));	//rotating
 
 				}
 		}
@@ -980,7 +980,7 @@ void change_conform_original(Liganddata* myligand, const double genotype [], int
 		if (debug == 1)
 			printf("according to general rotation\n");
 
-		rotate(&(myligand->atom_idxyzq [atom_id][1]), genrot_movvec, genrot_unitvec, &(genotype [5]), debug);		//general rotation
+		rotate(&(myligand->atom_idxyzq [atom_id][1]), genrot_movvec, genrot_unitvec, &(genotype [5]));		//general rotation
 	}
 
 	move_ligand(myligand, genotype);

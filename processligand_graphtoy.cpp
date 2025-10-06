@@ -1084,7 +1084,7 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
         if (!data.m_terminate_processing) {
             for (uint32_t bondCtr = 0; bondCtr < g_maxNumRotbonds; ++bondCtr) {
                 if (data.m_rotbondMask & (decltype(data.m_rotbondMask)(1) << bondCtr)) {
-                    rotate(&data.m_atomdata.m_atom_idxyzq[1], rotbonds_moving_vectors[bondCtr], rotbonds_unit_vectors[bondCtr], &genotype[bondCtr], 0);
+                    rotate(&data.m_atomdata.m_atom_idxyzq[1], rotbonds_moving_vectors[bondCtr], rotbonds_unit_vectors[bondCtr], &genotype[bondCtr]);
                 }
             }
         }
@@ -1133,7 +1133,7 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_GeneralRotation_GlobalMove,
         double *atom_xyz = &data.m_atomdata.m_atom_idxyzq[1];
 
         const double genrot_movvec[3] = {0, 0, 0};
-        rotate(atom_xyz, genrot_movvec, genrot_unitvec, &genrot_angle, 0);
+        rotate(atom_xyz, genrot_movvec, genrot_unitvec, &genrot_angle);
 
         vec3_accum(atom_xyz, globalmove_xyz);
 
