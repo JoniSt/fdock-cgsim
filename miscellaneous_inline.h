@@ -23,6 +23,13 @@ typedef struct
 									    cube[0][0][1]*weights[0][0][1] + cube[1][0][1]*weights[1][0][1] +	\
 									    cube[0][1][1]*weights[0][1][1] + cube[1][1][1]*weights[1][1][1])
 
+static inline double trilin_interpol_inline(const double cube [2][2][2], const double weights [2][2][2]) {
+    return (cube[0][0][0]*weights[0][0][0] + cube[1][0][0]*weights[1][0][0] +
+            cube[0][1][0]*weights[0][1][0] + cube[1][1][0]*weights[1][1][0] +
+            cube[0][0][1]*weights[0][0][1] + cube[1][0][1]*weights[1][0][1] +
+            cube[0][1][1]*weights[0][1][1] + cube[1][1][1]*weights[1][1][1]);
+}
+
 static inline double distance(const double point1 [], const double point2 [])
 //Returns the distance between point1 and point2 (the arrays have to store the x, y and z coordinates of the
 //point, respectively.

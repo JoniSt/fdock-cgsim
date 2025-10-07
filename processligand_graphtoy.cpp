@@ -736,7 +736,7 @@ COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
                 cube [0][1][1] = co_await dram_data_in.get();
                 cube [1][1][1] = co_await dram_data_in.get();
 
-                const double interpolated = trilin_interpol(cube, data.m_weights);
+                const double interpolated = trilin_interpol_inline(cube, data.m_weights);
 
                 switch (t) {
                     case GridType::ATOM:            result.m_atomTypeGridEnergy         = interpolated;                     break;
