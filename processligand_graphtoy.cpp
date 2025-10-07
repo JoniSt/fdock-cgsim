@@ -712,7 +712,6 @@ COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
     KernelWritePort<InterE_AtomEnergy> atom_energy_out
 ) {
     enum class GridType { ATOM, ELECTROSTATIC, DESOLVATION };
-    using enum GridType;
 
     while (true) {
         const auto data = co_await atom_data_in.get();
@@ -725,7 +724,7 @@ COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
         InterE_AtomEnergy result{.m_isOutOfGrid = data.m_isOutOfGrid};
 
         if (!data.m_isOutOfGrid) {
-            for (const GridType t: {ATOM, ELECTROSTATIC, DESOLVATION}) {
+            for (const GridType t: {GridType::ATOM, GridType::ELECTROSTATIC, GridType::DESOLVATION}) {
                 double cube[2][2][2];
 
                 cube [0][0][0] = co_await dram_data_in.get();
@@ -740,9 +739,9 @@ COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
                 const double interpolated = trilin_interpol(cube, data.m_weights);
 
                 switch (t) {
-                    case ATOM:              result.m_atomTypeGridEnergy         = interpolated;                     break;
-                    case ELECTROSTATIC:     result.m_electrostaticGridEnergy    = data.m_q * interpolated;          break;
-                    case DESOLVATION:       result.m_desolvationGridEnergy      = fabs(data.m_q) * interpolated;    break;
+                    case GridType::ATOM:            result.m_atomTypeGridEnergy         = interpolated;                     break;
+                    case GridType::ELECTROSTATIC:   result.m_electrostaticGridEnergy    = data.m_q * interpolated;          break;
+                    case GridType::DESOLVATION:     result.m_desolvationGridEnergy      = fabs(data.m_q) * interpolated;    break;
                 }
             }
         }
