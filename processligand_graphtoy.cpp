@@ -384,6 +384,7 @@ COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
     CGSIM_AUTO_NAME(num_atoms_in);
     CGSIM_AUTO_NAME(intraE_contributors_buf);
     CGSIM_AUTO_NAME(atom_idxyzq_buf);
+    CGSIM_AUTO_NAME(is_hbond_lut_buf);
     CGSIM_AUTO_NAME(volume_buf);
     CGSIM_AUTO_NAME(solpar_buf);
     CGSIM_AUTO_NAME(vwpars_a_buf);
@@ -843,6 +844,8 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
     CGSIM_AUTO_NAME(grid_buf);
     CGSIM_AUTO_NAME(peratom_vdw_buf);
     CGSIM_AUTO_NAME(peratom_elec_buf);
+    CGSIM_AUTO_NAME(interE_out);
+    CGSIM_AUTO_NAME(elecE_out);
 
     kernel_interE_BuildAtomData(
         num_atoms_in,
