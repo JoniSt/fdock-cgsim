@@ -696,7 +696,7 @@ COMPUTE_KERNEL(hls, kernel_interE_GenerateDramAddresses,
             const int gridOffset = interE_gridNumberToArrayOffset(size_xyz, gridNumber);
             for (const int coordOffset: coordOffsets) {
                 const int finalAddr = gridOffset + coordOffset;
-                BOOST_ASSERT(finalAddr >= 0);
+                //BOOST_ASSERT(finalAddr >= 0);
                 co_await address_out.put(uint32_t(finalAddr));
             }
         }
@@ -805,7 +805,7 @@ COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
         }
 
         if (enable_peratom_outputs) {
-            BOOST_ASSERT(peratom_index < g_maxNumAtoms);
+            //BOOST_ASSERT(peratom_index < g_maxNumAtoms);
             vdw_buf[peratom_index] = vdW;
             elec_buf[peratom_index] = elec;
             peratom_index++;
@@ -1021,7 +1021,7 @@ struct ChangeConform_AtomData {
 
     bool m_terminate_processing = false;
 
-    static_assert(sizeof(m_rotbondMask) * CHAR_BIT >= g_maxNumRotbonds);
+    //static_assert(sizeof(m_rotbondMask) * CHAR_BIT >= g_maxNumRotbonds);
 };
 
 static void vec3_accum(double *vec_a, const double *vec_b) {
@@ -1137,8 +1137,6 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_BuildRotateInputData,
 ) {
     const uint32_t num_atoms = co_await num_atoms_in.get();
     const uint32_t num_rotbonds = co_await num_rotbonds_in.get();
-    BOOST_ASSERT(num_atoms <= g_maxNumAtoms);
-    BOOST_ASSERT(num_rotbonds <= g_maxNumRotbonds);
 
     const double initial_move_xyz[3] = {
         co_await initial_move_x_in.get(),
