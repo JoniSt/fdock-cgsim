@@ -1047,13 +1047,16 @@ static void vec3_accum(double *vec_a, const double *vec_b) {
 
 COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
     KernelReadPort<ChangeConform_AtomData> atom_data_in,
-    KernelWritePort<ChangeConform_AtomData> atom_data_out,
     KernelReadPort<uint32_t, s_iop_rtp> num_rotbonds_in,
     KernelReadPort<double> genotype_sincos_in,
     KernelMemoryPort<const double> rotbonds_moving_vectors_buf,
-    KernelMemoryPort<const double> rotbonds_unit_vectors_buf
+    KernelMemoryPort<const double> rotbonds_unit_vectors_buf,
+    KernelMemoryPort<double> output_buf
 ) {
 #pragma HLS allocation operation instances=dmul limit=4
+
+    double genrot_unitvec[3];
+    double globalmove_xyz[3];
 
     double rotbonds_moving_vectors[g_maxNumRotbonds][3];
     double rotbonds_unit_vectors[g_maxNumRotbonds][3];
@@ -1061,6 +1064,7 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
 
     const uint32_t num_rotbonds = co_await num_rotbonds_in.get();
 
+    // Grab the rotational bond data from memory and cache it locally
     for (size_t i = 0; i < num_rotbonds; ++i) {
         for (size_t j = 0; j < 3; ++j) {
             rotbonds_moving_vectors[i][j] = rotbonds_moving_vectors_buf[i * 3 + j];
@@ -1068,58 +1072,7 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
         }
     }
 
-    // Skip global move and rotation
-    for (size_t i = 0; i < 3 + 3 * 2; ++i) {
-        co_await genotype_sincos_in.get();
-    }
-
-    // Read genotype sin/cos values for rotbonds
-    for (size_t i = 0; i < num_rotbonds; ++i) {
-        for (size_t j = 0; j < 2; ++j) {
-            genotype_sincos[i][j] = co_await genotype_sincos_in.get();
-        }
-    }
-
-    while (true) {
-        auto data = co_await atom_data_in.get();
-
-        // Process all rotbonds at once
-        if (!data.m_terminate_processing) {
-            for (uint32_t bondCtr = 0; bondCtr < g_maxNumRotbonds; ++bondCtr) {
-                if (data.m_rotbondMask & (decltype(data.m_rotbondMask)(1) << bondCtr)) {
-                    rotate_precomputed_sincos(
-                        &data.m_atomdata.m_atom_idxyzq[1],
-                        rotbonds_moving_vectors[bondCtr],
-                        rotbonds_unit_vectors[bondCtr],
-                        +genotype_sincos[bondCtr]
-                    );
-                }
-            }
-        }
-
-        co_await atom_data_out.put(data);
-
-        if (data.m_terminate_processing) break;
-    }
-}
-
-/**
- * This performs the final positioning of the conformed ligand in space.
- * Emits raw idxyzq data.
- */
-COMPUTE_KERNEL(hls, kernel_ChangeConform_GeneralRotation_GlobalMove,
-    KernelReadPort<ChangeConform_AtomData> atom_data_in,
-    KernelReadPort<uint32_t, s_iop_rtp> num_rotbonds_in,
-    KernelReadPort<double> genotype_sincos_in,
-    KernelMemoryPort<double> output_buf
-) {
-#pragma HLS allocation operation instances=dmul limit=2
-
-    double genrot_unitvec[3];
-    double globalmove_xyz[3];
-
-    const uint32_t num_rotbonds = co_await num_rotbonds_in.get();
-
+    // Read global move and general rotation values
     for (uint32_t i = 0; i < 3; ++i) {
         globalmove_xyz[i] = co_await genotype_sincos_in.get();
     }
@@ -1138,9 +1091,11 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_GeneralRotation_GlobalMove,
         genrot_angle_sincos[i] = co_await genotype_sincos_in.get();
     }
 
-    // Skip rotbond angles
-    for (size_t i = 0; i < num_rotbonds * 2; ++i) {
-        co_await genotype_sincos_in.get();
+    // Read genotype sin/cos values for rotbonds
+    for (size_t i = 0; i < num_rotbonds; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            genotype_sincos[i][j] = co_await genotype_sincos_in.get();
+        }
     }
 
     uint32_t atom_idx = 0;
@@ -1148,17 +1103,30 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_GeneralRotation_GlobalMove,
     while (true) {
         auto data = co_await atom_data_in.get();
 
-        if (data.m_terminate_processing) {
-            break;
-        }
+        if (data.m_terminate_processing) break;
 
         double *atom_xyz = &data.m_atomdata.m_atom_idxyzq[1];
 
+        // Process all rotbonds at once
+        for (uint32_t bondCtr = 0; bondCtr < g_maxNumRotbonds; ++bondCtr) {
+            if (data.m_rotbondMask & (decltype(data.m_rotbondMask)(1) << bondCtr)) {
+                rotate_precomputed_sincos(
+                    atom_xyz,
+                    rotbonds_moving_vectors[bondCtr],
+                    rotbonds_unit_vectors[bondCtr],
+                    +genotype_sincos[bondCtr]
+                );
+            }
+        }
+
+        // Apply general rotation
         const double genrot_movvec[3] = {0, 0, 0};
         rotate_precomputed_sincos(atom_xyz, genrot_movvec, genrot_unitvec, +genrot_angle_sincos);
 
+        // Apply global move
         vec3_accum(atom_xyz, globalmove_xyz);
 
+        // Write output
         for (uint32_t i = 0; i < 5; ++i) {
             output_buf[atom_idx * 5 + i] = data.m_atomdata.m_atom_idxyzq[i];
         }
@@ -1166,7 +1134,6 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_GeneralRotation_GlobalMove,
         atom_idx++;
     }
 }
-
 
 /**
  * Prepares the atom and rotbond data for sending it through the chain of rotate kernels.
@@ -1266,7 +1233,7 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
     IoConnector<const double> genotype_buf,
     IoConnector<double> output_buf
 ) {
-    IoConnector<ChangeConform_AtomData> atoms_read, atoms_rotated;
+    IoConnector<ChangeConform_AtomData> atoms_read;
     IoConnector<double> genotype_sincos_precomputed;
 
     CGSIM_AUTO_NAME(num_atoms_in);
@@ -1300,17 +1267,10 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
 
     kernel_ChangeConform_Rotate(
         atoms_read,
-        atoms_rotated,
         num_rotbonds_in,
         genotype_sincos_precomputed,
         rotbonds_moving_vectors_buf,
-        rotbonds_unit_vectors_buf
-    );
-
-    kernel_ChangeConform_GeneralRotation_GlobalMove(
-        atoms_rotated,
-        num_rotbonds_in,
-        genotype_sincos_precomputed,
+        rotbonds_unit_vectors_buf,
         output_buf
     );
 
