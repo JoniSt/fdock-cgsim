@@ -55,7 +55,7 @@ target_link_directories(fdock_cpu PRIVATE
     $ENV{CGSIM_INSTALL_DIR}/lib
 )
 
-target_compile_options(fdock_cpu PRIVATE -Wall)
+target_compile_options(fdock_cpu PRIVATE -Wall -Wno-unknown-pragmas)
 target_link_libraries(fdock_cpu PRIVATE m cgsim)
 
 add_executable(gen_fdock_luts tools/gen_fdock_luts.cpp)
