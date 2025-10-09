@@ -1223,9 +1223,9 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_precomputeTrig,
     KernelMemoryPort<const double> genotype_buf,
     KernelWritePort<double> trig_out
 ) {
-    const uint32_t genotybe_buf_size = 6 + co_await num_rotbonds_in.get();
+    const uint32_t genotype_buf_size = 6 + co_await num_rotbonds_in.get();
 
-    for (uint32_t i = 0; i < genotybe_buf_size; ++i) {
+    for (uint32_t i = 0; i < genotype_buf_size; ++i) {
         const double angle = genotype_buf[i];
 
         if (i < 3) {
