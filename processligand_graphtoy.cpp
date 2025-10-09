@@ -723,6 +723,8 @@ COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
     KernelReadPort<double> dram_data_in,
     KernelWritePort<InterE_AtomEnergy> atom_energy_out
 ) {
+#pragma HLS allocation operation instances=dmul limit=4
+
     enum class GridType { ATOM, ELECTROSTATIC, DESOLVATION };
 
     while (true) {
@@ -787,6 +789,8 @@ COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
     KernelWritePort<double, s_iop_rtp> interE_out,
     KernelWritePort<double, s_iop_rtp> elecE_out
 ) {
+#pragma HLS allocation operation instances=dadd limit=2
+
     const bool enable_peratom_outputs = co_await enable_peratom_outputs_in.get();
 
     double interE = 0;
@@ -1109,6 +1113,8 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_GeneralRotation_GlobalMove,
     KernelReadPort<double> genotype_sincos_in,
     KernelMemoryPort<double> output_buf
 ) {
+#pragma HLS allocation operation instances=dmul limit=2
+
     double genrot_unitvec[3];
     double globalmove_xyz[3];
 
@@ -1223,6 +1229,8 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_precomputeTrig,
     KernelMemoryPort<const double> genotype_buf,
     KernelWritePort<double> trig_out
 ) {
+#pragma HLS allocation operation instances=dmul limit=2
+
     const uint32_t genotype_buf_size = 6 + co_await num_rotbonds_in.get();
 
     for (uint32_t i = 0; i < genotype_buf_size; ++i) {
