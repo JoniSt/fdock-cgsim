@@ -1045,15 +1045,15 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
     KernelReadPort<ChangeConform_AtomData> atom_data_in,
     KernelWritePort<ChangeConform_AtomData> atom_data_out,
     KernelReadPort<uint32_t, s_iop_rtp> num_rotbonds_in,
+    KernelReadPort<double> genotype_sincos_in,
     KernelMemoryPort<const double> rotbonds_moving_vectors_buf,
-    KernelMemoryPort<const double> rotbonds_unit_vectors_buf,
-    KernelMemoryPort<const double> genotype_buf
+    KernelMemoryPort<const double> rotbonds_unit_vectors_buf
 ) {
 #pragma HLS allocation operation instances=dmul limit=4
 
     double rotbonds_moving_vectors[g_maxNumRotbonds][3];
     double rotbonds_unit_vectors[g_maxNumRotbonds][3];
-    double genotype[g_maxNumRotbonds];
+    double genotype_sincos[g_maxNumRotbonds][2];
 
     const uint32_t num_rotbonds = co_await num_rotbonds_in.get();
 
@@ -1062,7 +1062,18 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
             rotbonds_moving_vectors[i][j] = rotbonds_moving_vectors_buf[i * 3 + j];
             rotbonds_unit_vectors[i][j] = rotbonds_unit_vectors_buf[i * 3 + j];
         }
-        genotype[i] = genotype_buf[i + 6]; // Skip the first 6 global move/rotation parameters
+    }
+
+    // Skip global move and rotation
+    for (size_t i = 0; i < 3 + 3 * 2; ++i) {
+        co_await genotype_sincos_in.get();
+    }
+
+    // Read genotype sin/cos values for rotbonds
+    for (size_t i = 0; i < num_rotbonds; ++i) {
+        for (size_t j = 0; j < 2; ++j) {
+            genotype_sincos[i][j] = co_await genotype_sincos_in.get();
+        }
     }
 
     while (true) {
@@ -1072,7 +1083,12 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
         if (!data.m_terminate_processing) {
             for (uint32_t bondCtr = 0; bondCtr < g_maxNumRotbonds; ++bondCtr) {
                 if (data.m_rotbondMask & (decltype(data.m_rotbondMask)(1) << bondCtr)) {
-                    rotate(&data.m_atomdata.m_atom_idxyzq[1], rotbonds_moving_vectors[bondCtr], rotbonds_unit_vectors[bondCtr], &genotype[bondCtr]);
+                    rotate_precomputed_sincos(
+                        &data.m_atomdata.m_atom_idxyzq[1],
+                        rotbonds_moving_vectors[bondCtr],
+                        rotbonds_unit_vectors[bondCtr],
+                        +genotype_sincos[bondCtr]
+                    );
                 }
             }
         }
@@ -1089,27 +1105,37 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
  */
 COMPUTE_KERNEL(hls, kernel_ChangeConform_GeneralRotation_GlobalMove,
     KernelReadPort<ChangeConform_AtomData> atom_data_in,
-    KernelMemoryPort<const double> genotype_buf,
+    KernelReadPort<uint32_t, s_iop_rtp> num_rotbonds_in,
+    KernelReadPort<double> genotype_sincos_in,
     KernelMemoryPort<double> output_buf
 ) {
-#pragma HLS allocation operation instances=sin_or_cos_double_s limit=1
-
     double genrot_unitvec[3];
-    double genrot_angle;
     double globalmove_xyz[3];
 
+    const uint32_t num_rotbonds = co_await num_rotbonds_in.get();
+
     for (uint32_t i = 0; i < 3; ++i) {
-        globalmove_xyz[i] = genotype_buf[i];
+        globalmove_xyz[i] = co_await genotype_sincos_in.get();
     }
 
-    const double phi = genotype_buf[3] / 180 * M_PI;
-    const double theta = genotype_buf[4] / 180 * M_PI;
+    const double sin_phi = co_await genotype_sincos_in.get();
+    const double cos_phi = co_await genotype_sincos_in.get();
+    const double sin_theta = co_await genotype_sincos_in.get();
+    const double cos_theta = co_await genotype_sincos_in.get();
 
-    genrot_unitvec[0] = sin(theta)*cos(phi);
-    genrot_unitvec[1] = sin(theta)*sin(phi);
-    genrot_unitvec[2] = cos(theta);
+    genrot_unitvec[0] = sin_theta * cos_phi;
+    genrot_unitvec[1] = sin_theta * sin_phi;
+    genrot_unitvec[2] = cos_theta;
 
-    genrot_angle = genotype_buf[5];
+    double genrot_angle_sincos[2];
+    for (uint32_t i = 0; i < 2; ++i) {
+        genrot_angle_sincos[i] = co_await genotype_sincos_in.get();
+    }
+
+    // Skip rotbond angles
+    for (size_t i = 0; i < num_rotbonds * 2; ++i) {
+        co_await genotype_sincos_in.get();
+    }
 
     uint32_t atom_idx = 0;
 
@@ -1123,7 +1149,7 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_GeneralRotation_GlobalMove,
         double *atom_xyz = &data.m_atomdata.m_atom_idxyzq[1];
 
         const double genrot_movvec[3] = {0, 0, 0};
-        rotate(atom_xyz, genrot_movvec, genrot_unitvec, &genrot_angle);
+        rotate_precomputed_sincos(atom_xyz, genrot_movvec, genrot_unitvec, +genrot_angle_sincos);
 
         vec3_accum(atom_xyz, globalmove_xyz);
 
@@ -1189,6 +1215,36 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_BuildRotateInputData,
     co_await atoms_out.put(ChangeConform_AtomData{.m_terminate_processing = true});
 }
 
+/**
+ * Computes sin(x), cos(x), sin(x/2), cos(x/2) for each value in the genotype buffer.
+ */
+COMPUTE_KERNEL(hls, kernel_ChangeConform_precomputeTrig,
+    KernelReadPort<uint32_t, s_iop_rtp> num_rotbonds_in,
+    KernelMemoryPort<const double> genotype_buf,
+    KernelWritePort<double> trig_out
+) {
+    const uint32_t genotybe_buf_size = 6 + co_await num_rotbonds_in.get();
+
+    for (uint32_t i = 0; i < genotybe_buf_size; ++i) {
+        const double angle = genotype_buf[i];
+
+        if (i < 3) {
+            // No trig needed for global move
+            co_await trig_out.put(angle);
+
+        } else if (i < 5) {
+            // phi, theta
+            co_await trig_out.put(sin(angle / 180 * M_PI));
+            co_await trig_out.put(cos(angle / 180 * M_PI));
+
+        } else {
+            // Global rotation, rotbonds
+            co_await trig_out.put(sin(angle / 2 / 180 * M_PI));
+            co_await trig_out.put(cos(angle / 2 / 180 * M_PI));
+        }
+    }
+}
+
 COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
     IoConnector<uint32_t> num_atoms_in,
     IoConnector<uint32_t> num_rotbonds_in,
@@ -1203,6 +1259,7 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
     IoConnector<double> output_buf
 ) {
     IoConnector<ChangeConform_AtomData> atoms_read, atoms_rotated;
+    IoConnector<double> genotype_sincos_precomputed;
 
     CGSIM_AUTO_NAME(num_atoms_in);
     CGSIM_AUTO_NAME(num_rotbonds_in);
@@ -1215,6 +1272,12 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
     CGSIM_AUTO_NAME(rotbonds_unit_vectors_buf);
     CGSIM_AUTO_NAME(genotype_buf);
     CGSIM_AUTO_NAME(output_buf);
+
+    kernel_ChangeConform_precomputeTrig(
+        num_rotbonds_in,
+        genotype_buf,
+        genotype_sincos_precomputed
+    );
 
     kernel_ChangeConform_BuildRotateInputData(
         num_atoms_in,
@@ -1231,14 +1294,15 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
         atoms_read,
         atoms_rotated,
         num_rotbonds_in,
+        genotype_sincos_precomputed,
         rotbonds_moving_vectors_buf,
-        rotbonds_unit_vectors_buf,
-        genotype_buf
+        rotbonds_unit_vectors_buf
     );
 
     kernel_ChangeConform_GeneralRotation_GlobalMove(
         atoms_rotated,
-        genotype_buf,
+        num_rotbonds_in,
+        genotype_sincos_precomputed,
         output_buf
     );
 
@@ -1311,6 +1375,19 @@ void change_conform(Liganddata* myligand, const double genotype [], int debug) {
     const size_t numBytes = graphResult.size() * sizeof(graphResult[0]);
     if (std::memcmp(graphResult.data(), &myligand->atom_idxyzq[0], numBytes)) {
         std::cerr << "ChangeConform mismatch\n";
+
+        /*for (size_t i = 0; i < graphResult.size(); ++i) {
+            const auto& a = graphResult[i];
+            const auto& b = myligand->atom_idxyzq[i];
+
+            if (std::memcmp(&a, &b, sizeof(a))) {
+                std::cerr << " Atom " << i << " mismatch: "
+                          << a.m_atom_idxyzq[0] << "," << a.m_atom_idxyzq[1] << "," << a.m_atom_idxyzq[2] << "," << a.m_atom_idxyzq[3] << "," << a.m_atom_idxyzq[4]
+                          << " vs "
+                          << b[0] << "," << b[1] << "," << b[2] << "," << b[3] << "," << b[4]
+                          << "\n";
+            }
+        }*/
     }
 
     if (g_graphdumpsEnabled) {
