@@ -111,6 +111,10 @@ static inline void rotate_precomputed_sincos(double point [], const double movve
 //can be moved to the origo with vector movvec. The direction of rotation with angle is considered relative to normvec
 //according to right hand rule. If debug is 1, debug messages will be printed to the screen.
 {
+#pragma HLS inline
+//#pragma HLS inline off
+//#pragma HLS allocation operation instances=dmul limit=2
+//#pragma HLS allocation operation instances=dadd limit=2
 
 	Quaternion quatrot_left, quatrot_right, quatrot_temp;
 	double cos_anglediv2, sin_anglediv2;

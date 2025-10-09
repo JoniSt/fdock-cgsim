@@ -87,7 +87,9 @@ COMPUTE_KERNEL(hls, kernel_IntraE_GenAtomPairIndices,
     num_atoms = std::min(num_atoms, uint32_t(g_maxNumAtoms));
 
     for (uint32_t x = 0; x < num_atoms; ++x) {
+#pragma HLS unroll off
         for (uint32_t y = 0; y < num_atoms; ++y) {
+#pragma HLS unroll off
             const char atomPairContributes = intraE_contributors_buf[x * g_maxNumAtoms + y];
 
             if (x < y && atomPairContributes) {
@@ -174,6 +176,7 @@ COMPUTE_KERNEL(hls, kernel_IntraE_SetDistanceID_CheckHBond,
     char is_hbond_lut[num_hbond_lut_entries];
 
     for (size_t i = 0; i < num_hbond_lut_entries; ++i) {
+#pragma HLS unroll off
         is_hbond_lut[i] = is_hbond_lut_buf[i];
     }
 
@@ -1053,7 +1056,8 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
     KernelMemoryPort<const double> rotbonds_unit_vectors_buf,
     KernelMemoryPort<double> output_buf
 ) {
-#pragma HLS allocation operation instances=dmul limit=4
+#pragma HLS allocation operation instances=dmul limit=2
+//#pragma HLS allocation function instances=rotate_precomputed_sincos limit=1
 
     double genrot_unitvec[3];
     double globalmove_xyz[3];
@@ -1066,6 +1070,8 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
 
     // Grab the rotational bond data from memory and cache it locally
     for (size_t i = 0; i < num_rotbonds; ++i) {
+#pragma HLS unroll off
+
         for (size_t j = 0; j < 3; ++j) {
             rotbonds_moving_vectors[i][j] = rotbonds_moving_vectors_buf[i * 3 + j];
             rotbonds_unit_vectors[i][j] = rotbonds_unit_vectors_buf[i * 3 + j];
@@ -1093,6 +1099,8 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
 
     // Read genotype sin/cos values for rotbonds
     for (size_t i = 0; i < num_rotbonds; ++i) {
+#pragma HLS unroll off
+
         for (size_t j = 0; j < 2; ++j) {
             genotype_sincos[i][j] = co_await genotype_sincos_in.get();
         }
@@ -1109,6 +1117,8 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
 
         // Process all rotbonds at once
         for (uint32_t bondCtr = 0; bondCtr < g_maxNumRotbonds; ++bondCtr) {
+#pragma HLS unroll off
+
             if (data.m_rotbondMask & (decltype(data.m_rotbondMask)(1) << bondCtr)) {
                 rotate_precomputed_sincos(
                     atom_xyz,
@@ -1201,6 +1211,8 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_precomputeTrig,
     const uint32_t genotype_buf_size = 6 + co_await num_rotbonds_in.get();
 
     for (uint32_t i = 0; i < genotype_buf_size; ++i) {
+#pragma HLS unroll off
+
         const double angle = genotype_buf[i];
 
         if (i < 3) {
