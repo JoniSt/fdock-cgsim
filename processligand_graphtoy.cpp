@@ -110,6 +110,7 @@ COMPUTE_KERNEL(hls, kernel_IntraE_FetchAtomData,
     KernelWritePort<IntraE_AtomPair> atom_data_out
 ) {
     double atom_idxyzq[g_maxNumAtoms][5];
+#pragma HLS bind_storage variable=atom_idxyzq type=ram_2p impl=bram
 
     uint32_t num_atoms = co_await num_atoms_in.get();
     num_atoms = std::min(num_atoms, uint32_t(g_maxNumAtoms));
@@ -164,6 +165,8 @@ COMPUTE_KERNEL(hls, kernel_IntraE_SetDistanceID_CheckHBond,
     KernelReadPort<double, s_iop_rtp> dcutoff_in,
     KernelMemoryPort<const char> is_hbond_lut_buf
 ) {
+#pragma HLS allocation operation instances=dmul limit=2
+
     const double dcutoff = co_await dcutoff_in.get();
 
     // Make a local copy of the H-bond LUT
@@ -211,6 +214,9 @@ COMPUTE_KERNEL(hls, kernel_IntraE_Volume_Solpar,
     KernelMemoryPort<const double> volume_buf,
     KernelMemoryPort<const double> solpar_buf
 ) {
+#pragma HLS allocation operation instances=dmul limit=1
+#pragma HLS allocation operation instances=dadd limit=1
+
     const double qasp = co_await qasp_in.get();
 
     double volume[g_maxNumAtomTypes];
@@ -298,6 +304,8 @@ COMPUTE_KERNEL(hls, kernel_IntraE_ScaleVWparsWithDistance,
     KernelReadPort<IntraE_AtomPair> atom_data_in,
     KernelWritePort<IntraE_AtomPair> atom_data_out
 ) {
+#pragma HLS allocation operation instances=dmul limit=1
+
     while (true) {
         auto data = co_await atom_data_in.get();
 
@@ -325,6 +333,8 @@ COMPUTE_KERNEL(hls, kernel_IntraE_Compute_VW_EL_Desolv,
     KernelWritePort<double, s_iop_rtp> el_out,
     KernelWritePort<double, s_iop_rtp> desolv_out
 ) {
+#pragma HLS allocation operation instances=dmul limit=3
+
     double vW = 0;
     double el = 0;
     double desolv = 0;
@@ -598,6 +608,8 @@ COMPUTE_KERNEL(hls, kernel_interE_BuildAtomData,
     KernelMemoryPort<const double> atom_idxyzq_buf,
     KernelWritePort<InterE_AtomData> atom_data_out
 ) {
+#pragma HLS allocation operation instances=dmul limit=3
+
     uint32_t num_atoms = co_await num_atoms_in.get();
     num_atoms = std::min(num_atoms, uint32_t(g_maxNumAtoms));
 
@@ -1037,6 +1049,8 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
     KernelMemoryPort<const double> rotbonds_unit_vectors_buf,
     KernelMemoryPort<const double> genotype_buf
 ) {
+#pragma HLS allocation operation instances=dmul limit=4
+
     double rotbonds_moving_vectors[g_maxNumRotbonds][3];
     double rotbonds_unit_vectors[g_maxNumRotbonds][3];
     double genotype[g_maxNumRotbonds];
@@ -1078,6 +1092,8 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_GeneralRotation_GlobalMove,
     KernelMemoryPort<const double> genotype_buf,
     KernelMemoryPort<double> output_buf
 ) {
+#pragma HLS allocation operation instances=sin_or_cos_double_s limit=1
+
     double genrot_unitvec[3];
     double genrot_angle;
     double globalmove_xyz[3];
