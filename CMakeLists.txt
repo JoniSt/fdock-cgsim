@@ -16,7 +16,22 @@ if(CMAKE_EXPORT_COMPILE_COMMANDS)
     set(CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES})
 endif()
 
+set(HAVE_TAPASCO FALSE)
+if (DEFINED ENV{Tapasco_DIR})
+    set(HAVE_TAPASCO TRUE)
+    set(TAPASCO_CMAKE_DIR $ENV{Tapasco_DIR})
+    message(STATUS "Using TaPaSCo via CMake: ${TAPASCO_CMAKE_DIR}")
+    find_package(Tapasco REQUIRED PATHS "${TAPASCO_CMAKE_DIR}")
+else()
+    message(STATUS "Tapasco_DIR is not set, building without HW support")
+endif()
+
 add_executable(fdock_cpu)
+
+if (${HAVE_TAPASCO})
+    target_compile_definitions(fdock_cpu PRIVATE "-DHAVE_TAPASCO")
+    target_link_libraries(fdock_cpu PRIVATE tapasco)
+endif()
 
 target_sources(fdock_cpu PRIVATE
     fdock.c

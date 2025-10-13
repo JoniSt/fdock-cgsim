@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <bit>
+#include <unordered_map>
 
 #include <boost/assert.hpp>
 
@@ -23,6 +24,35 @@
 #include "processligand.h"
 #include "cgsim/cgsim.hpp"
 #include "json.hpp"
+
+#ifdef HAVE_TAPASCO
+#include <tapasco.hpp>
+
+static constexpr const char s_tpc_vlnv_intraE[] = "cgsim_autogen:cgsim_graphs:intraE_graph_hls:1.0";
+static constexpr const char s_tpc_vlnv_interE[] = "cgsim_autogen:cgsim_graphs:interE_graph_hls:1.0";
+static constexpr const char s_tpc_vlnv_changeConform[] = "cgsim_autogen:cgsim_graphs:changeConform_graph_hls:1.0";
+
+static tapasco::Tapasco& get_tapasco() {
+    static tapasco::Tapasco tpc{};
+    return tpc;
+}
+
+static tapasco::PEId get_tapasco_pe(const char *vlnv) {
+    static std::unordered_map<std::string_view, tapasco::PEId> known_pes{};
+
+    if (auto iter = known_pes.find(vlnv); iter != known_pes.end()) {
+        return iter->second;
+    }
+
+    auto peid = get_tapasco().get_pe_id(vlnv);
+    known_pes[vlnv] = peid;
+
+    std::cerr << "\nResolved TaPaSCo PEID: " << vlnv << " -> " << peid << std::endl;
+
+    return peid;
+}
+
+#endif
 
 using namespace ttlhacker::cgsim;
 
@@ -483,6 +513,11 @@ double calc_intraE_graphtoy(const Liganddata* myligand, double dcutoff, char ign
 
     // Warn about deadlocks
     result.dump(std::cerr);
+
+#ifdef HAVE_TAPASCO
+    auto& tpc = get_tapasco();
+    const auto peid = get_tapasco_pe(s_tpc_vlnv_intraE);
+#endif
 
     return vW + el + (ignore_desolv ? 0.0 : desolv);
 }
