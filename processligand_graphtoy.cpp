@@ -62,6 +62,11 @@ static auto tapasco_inbuf(std::span<const T> buf) {
     return tapasco::makeInOnly(tapasco::makeWrappedPointer(buf.data(), buf.size_bytes()));
 }
 
+template<typename T>
+static auto tapasco_outbuf(std::span<T> buf) {
+    return tapasco::makeOutOnly(tapasco::makeWrappedPointer(buf.data(), buf.size_bytes()));
+}
+
 #endif
 
 using namespace ttlhacker::cgsim;
@@ -535,7 +540,10 @@ double calc_intraE_graphtoy(const Liganddata* myligand, double dcutoff, char ign
     auto vwpars_c_tpc = tapasco_inbuf<double>(vwpars_c_buf);
     auto vwpars_d_tpc = tapasco_inbuf<double>(vwpars_d_buf);
 
-    /*auto job = tpc.launch(peid,
+    std::vector<double> out_tpc_buf(3, 0.0);
+    auto out_tpc = tapasco_outbuf<double>(out_tpc_buf);
+
+    auto job = tpc.launch(peid,
         myligand->num_of_atoms,
         intraE_contributors_tpc,
         atom_idxyzq_tpc,
@@ -550,7 +558,12 @@ double calc_intraE_graphtoy(const Liganddata* myligand, double dcutoff, char ign
         qasp,
         scaled_AD4_coeff_elec,
         AD4_coeff_desolv,
-    );*/
+        out_tpc
+    );
+
+    job();
+
+    // TODO: Check results
 #endif
 
     return vW + el + (ignore_desolv ? 0.0 : desolv);
