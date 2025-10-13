@@ -44,12 +44,22 @@ static tapasco::PEId get_tapasco_pe(const char *vlnv) {
         return iter->second;
     }
 
-    auto peid = get_tapasco().get_pe_id(vlnv);
+    auto& tpc = get_tapasco();
+    auto peid = tpc.get_pe_id(vlnv);
     known_pes[vlnv] = peid;
 
     std::cerr << "\nResolved TaPaSCo PEID: " << vlnv << " -> " << peid << std::endl;
 
+    if (!tpc.kernel_pe_count(peid)) {
+        throw std::runtime_error("Need at least 1 PE instance");
+    }
+
     return peid;
+}
+
+template<typename T>
+static auto tapasco_inbuf(std::span<const T> buf) {
+    return tapasco::makeInOnly(tapasco::makeWrappedPointer(buf.data(), buf.size_bytes()));
 }
 
 #endif
@@ -517,6 +527,8 @@ double calc_intraE_graphtoy(const Liganddata* myligand, double dcutoff, char ign
 #ifdef HAVE_TAPASCO
     auto& tpc = get_tapasco();
     const auto peid = get_tapasco_pe(s_tpc_vlnv_intraE);
+
+    auto intraE_contributors_tpc = tapasco_inbuf(intraE_contributors_buf);
 #endif
 
     return vW + el + (ignore_desolv ? 0.0 : desolv);
