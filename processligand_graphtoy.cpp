@@ -372,9 +372,7 @@ COMPUTE_KERNEL(hls, kernel_IntraE_Compute_VW_EL_Desolv,
     KernelReadPort<IntraE_AtomPair> atom_data_in,
     KernelReadPort<double, s_iop_rtp> scaled_AD4_coeff_elec_in,
     KernelReadPort<double, s_iop_rtp> AD4_coeff_desolv_in,
-    KernelWritePort<double, s_iop_rtp> vW_out,
-    KernelWritePort<double, s_iop_rtp> el_out,
-    KernelWritePort<double, s_iop_rtp> desolv_out
+    KernelMemoryPort<double> outs
 ) {
 #pragma HLS allocation operation instances=dmul limit=3
 
@@ -406,9 +404,12 @@ COMPUTE_KERNEL(hls, kernel_IntraE_Compute_VW_EL_Desolv,
             * (desolvScale * fdock_luts::intra_desolv_table_unscaled[data.m_distanceID]);
     }
 
-    co_await vW_out.put(vW);
-    co_await el_out.put(el);
-    co_await desolv_out.put(desolv);
+    //co_await vW_out.put(vW);
+    //co_await el_out.put(el);
+    //co_await desolv_out.put(desolv);
+    outs[0] = vW;
+    outs[1] = el;
+    outs[2] = desolv;
 }
 
 COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
@@ -425,7 +426,8 @@ COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
     IoConnector<double> dcutoff_in,
     IoConnector<double> qasp_in,
     IoConnector<double> scaled_AD4_coeff_elec_in,
-    IoConnector<double> AD4_coeff_desolv_in
+    IoConnector<double> AD4_coeff_desolv_in,
+    IoConnector<double> out_buf
 ) {
     IoConnector<AtomIndexPair> atom_pairs;
     IoConnector<IntraE_AtomPair>
@@ -434,8 +436,6 @@ COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
         atom_data_with_volume,
         atom_data_with_vw_fetched,
         atom_data_with_vw_scaled;
-
-    IoConnector<double> vW_out, el_out, desolv_out;
 
     CGSIM_AUTO_NAME(num_atoms_in);
     CGSIM_AUTO_NAME(intraE_contributors_buf);
@@ -451,9 +451,7 @@ COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
     CGSIM_AUTO_NAME(qasp_in);
     CGSIM_AUTO_NAME(scaled_AD4_coeff_elec_in);
     CGSIM_AUTO_NAME(AD4_coeff_desolv_in);
-    CGSIM_AUTO_NAME(vW_out);
-    CGSIM_AUTO_NAME(el_out);
-    CGSIM_AUTO_NAME(desolv_out);
+    CGSIM_AUTO_NAME(out_buf);
 
     kernel_IntraE_GenAtomPairIndices(num_atoms_in, intraE_contributors_buf, atom_pairs);
     kernel_IntraE_FetchAtomData(num_atoms_in, atom_pairs, atom_idxyzq_buf, atom_data_fetched);
@@ -461,9 +459,9 @@ COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
     kernel_IntraE_Volume_Solpar(atom_data_distance_checked, atom_data_with_volume, qasp_in, volume_buf, solpar_buf);
     kernel_IntraE_FetchVWpars(atom_data_with_volume, atom_data_with_vw_fetched, vwpars_a_buf, vwpars_b_buf, vwpars_c_buf, vwpars_d_buf);
     kernel_IntraE_ScaleVWparsWithDistance(atom_data_with_vw_fetched, atom_data_with_vw_scaled);
-    kernel_IntraE_Compute_VW_EL_Desolv(atom_data_with_vw_scaled, scaled_AD4_coeff_elec_in, AD4_coeff_desolv_in, vW_out, el_out, desolv_out);
+    kernel_IntraE_Compute_VW_EL_Desolv(atom_data_with_vw_scaled, scaled_AD4_coeff_elec_in, AD4_coeff_desolv_in, out_buf);
 
-    return std::tuple(vW_out, el_out, desolv_out);
+    return std::tuple();
 }>;
 
 
@@ -496,9 +494,10 @@ double calc_intraE_graphtoy(const Liganddata* myligand, double dcutoff, char ign
     // HBond LUT
     auto is_hbond_lut_buf = intraE_build_hbond_lut(myligand);
 
-    double vW = 0;
-    double el = 0;
-    double desolv = 0;
+    std::vector<double> out_buf(3, 0.0); // vW, el, desolv
+    double& vW = out_buf[0];
+    double& el = out_buf[1];
+    double& desolv = out_buf[2];
 
     // Run graph
     const auto result = intraE_graph(
@@ -516,9 +515,7 @@ double calc_intraE_graphtoy(const Liganddata* myligand, double dcutoff, char ign
         ScalarDataSource<double>(qasp),
         ScalarDataSource<double>(scaled_AD4_coeff_elec),
         ScalarDataSource<double>(AD4_coeff_desolv),
-        ScalarDataSink<double>(vW),
-        ScalarDataSink<double>(el),
-        ScalarDataSink<double>(desolv)
+        memBuffer(out_buf)
     );
 
     // Warn about deadlocks
