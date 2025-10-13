@@ -529,6 +529,31 @@ double calc_intraE_graphtoy(const Liganddata* myligand, double dcutoff, char ign
     const auto peid = get_tapasco_pe(s_tpc_vlnv_intraE);
 
     auto intraE_contributors_tpc = tapasco_inbuf<char>(intraE_contributors_buf);
+    auto atom_idxyzq_tpc = tapasco_inbuf<double>(atom_idxyzq_buf);
+    auto is_hbond_lut_tpc = tapasco_inbuf<char>(is_hbond_lut_buf);
+    auto volume_tpc = tapasco_inbuf<double>(std::span<const double>(myligand->volume, g_maxNumAtomTypes));
+    auto solpar_tpc = tapasco_inbuf<double>(std::span<const double>(myligand->solpar, g_maxNumAtomTypes));
+    auto vwpars_a_tpc = tapasco_inbuf<double>(vwpars_a_buf);
+    auto vwpars_b_tpc = tapasco_inbuf<double>(vwpars_b_buf);
+    auto vwpars_c_tpc = tapasco_inbuf<double>(vwpars_c_buf);
+    auto vwpars_d_tpc = tapasco_inbuf<double>(vwpars_d_buf);
+
+    /*auto job = tpc.launch(peid,
+        myligand->num_of_atoms,
+        intraE_contributors_tpc,
+        atom_idxyzq_tpc,
+        is_hbond_lut_tpc,
+        volume_tpc,
+        solpar_tpc,
+        vwpars_a_tpc,
+        vwpars_b_tpc,
+        vwpars_c_tpc,
+        vwpars_d_tpc,
+        dcutoff,
+        qasp,
+        scaled_AD4_coeff_elec,
+        AD4_coeff_desolv,
+    );*/
 #endif
 
     return vW + el + (ignore_desolv ? 0.0 : desolv);
