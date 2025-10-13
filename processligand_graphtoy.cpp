@@ -528,7 +528,7 @@ double calc_intraE_graphtoy(const Liganddata* myligand, double dcutoff, char ign
     auto& tpc = get_tapasco();
     const auto peid = get_tapasco_pe(s_tpc_vlnv_intraE);
 
-    auto intraE_contributors_tpc = tapasco_inbuf(intraE_contributors_buf);
+    auto intraE_contributors_tpc = tapasco_inbuf<char>(intraE_contributors_buf);
 #endif
 
     return vW + el + (ignore_desolv ? 0.0 : desolv);
