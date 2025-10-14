@@ -1012,8 +1012,8 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
     std::span<const double> gridMemoryRegion{fgrids, size_t(numGridMemElems)};
 
     // Output buffers
-    std::vector<double> peratom_vdw_buf;
-    std::vector<double> peratom_elec_buf;
+    std::vector<double> peratom_vdw_buf{1, 0.0};
+    std::vector<double> peratom_elec_buf{1, 0.0};
     if (enablePerAtomOutputs) {
         peratom_vdw_buf.resize(myligand->num_of_atoms);
         peratom_elec_buf.resize(myligand->num_of_atoms);
@@ -1024,6 +1024,33 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
     double& interE = out_buf[0];
     double& elecE  = out_buf[1];
 
+#ifdef HAVE_TAPASCO
+    auto& tpc = get_tapasco();
+    const auto peid = get_tapasco_pe(s_tpc_vlnv_interE);
+
+    auto atom_idxyzq_tpc = tapasco_inbuf<double>(atom_idxyzq_buf);
+    auto grid_tpc = tapasco_inbuf<double>(gridMemoryRegion);
+    auto peratom_vdw_tpc = tapasco_outbuf<double>(peratom_vdw_buf);
+    auto peratom_elec_tpc = tapasco_outbuf<double>(peratom_elec_buf);
+    auto out_tpc = tapasco_outbuf<double>(out_buf);
+
+    auto job = tpc.launch(peid,
+        myligand->num_of_atoms,
+        outofgrid_tolerance,
+        mygrid->size_xyz[0],
+        mygrid->size_xyz[1],
+        mygrid->size_xyz[2],
+        myligand->num_of_atypes,
+        enablePerAtomOutputs,
+        atom_idxyzq_tpc,
+        grid_tpc,
+        peratom_vdw_tpc,
+        peratom_elec_tpc,
+        out_tpc
+    );
+
+    job();
+#else
     const auto result = interE_graph(
         ScalarDataSource<uint32_t>(myligand->num_of_atoms),
         ScalarDataSource<double>(outofgrid_tolerance),
@@ -1040,6 +1067,7 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
     );
 
     result.dump(std::cerr);
+#endif
 
     return {
         .m_interE = interE,
@@ -1392,8 +1420,37 @@ static auto change_conform_graphtoy(const Liganddata* myligand, const double gen
     double initial_move_xyz[3];
     get_movvec_to_origo(myligand, initial_move_xyz);
 
+    const auto genotype_span = std::span<const double>(genotype, 6 + myligand->num_of_rotbonds);
+
+#ifdef HAVE_TAPASCO
+    auto& tpc = get_tapasco();
+    const auto peid = get_tapasco_pe(s_tpc_vlnv_changeConform);
+
+    auto atom_idxyzq_tpc = tapasco_inbuf<double>(atom_idxyzq_buf);
+    auto atom_rotbonds_tpc = tapasco_inbuf<char>(atom_rotbonds_buf);
+    auto rotbonds_moving_vectors_tpc = tapasco_inbuf<double>(rotbonds_moving_vectors_buf);
+    auto rotbonds_unit_vectors_tpc = tapasco_inbuf<double>(rotbonds_unit_vectors_buf);
+    auto genotype_tpc = tapasco_inbuf<double>(genotype_span);
+    auto output_tpc = tapasco_outbuf<double>(output_buf);
+
+    auto job = tpc.launch(peid,
+        myligand->num_of_atoms,
+        myligand->num_of_rotbonds,
+        initial_move_xyz[0],
+        initial_move_xyz[1],
+        initial_move_xyz[2],
+        atom_idxyzq_tpc,
+        atom_rotbonds_tpc,
+        rotbonds_moving_vectors_tpc,
+        rotbonds_unit_vectors_tpc,
+        genotype_tpc,
+        output_tpc
+    );
+
+    job();
+#else
     // Run graph
-    changeConform_graph(
+    const auto result = changeConform_graph(
         ScalarDataSource<uint32_t>(myligand->num_of_atoms),
         ScalarDataSource<uint32_t>(myligand->num_of_rotbonds),
         ScalarDataSource<double>(initial_move_xyz[0]),
@@ -1403,9 +1460,12 @@ static auto change_conform_graphtoy(const Liganddata* myligand, const double gen
         memBuffer(atom_rotbonds_buf),
         memBuffer(rotbonds_moving_vectors_buf),
         memBuffer(rotbonds_unit_vectors_buf),
-        RuntimeMemoryBuffer(std::span<const double>(genotype, 6 + myligand->num_of_rotbonds)),
+        RuntimeMemoryBuffer(genotype_span),
         memBuffer(output_buf)
     );
+
+    result.dump(std::cerr);
+#endif
 
     // Reorder result
     std::vector<InterE_AtomInput> output_buf_struct(myligand->num_of_atoms);
