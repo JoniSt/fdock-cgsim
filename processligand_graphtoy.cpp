@@ -867,8 +867,7 @@ COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
     KernelReadPort<bool, s_iop_rtp> enable_peratom_outputs_in,
     KernelMemoryPort<double> vdw_buf,
     KernelMemoryPort<double> elec_buf,
-    KernelWritePort<double, s_iop_rtp> interE_out,
-    KernelWritePort<double, s_iop_rtp> elecE_out
+    KernelMemoryPort<double> scalar_out_buf
 ) {
 #pragma HLS allocation operation instances=dadd limit=2
 
@@ -908,8 +907,11 @@ COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
         }
     }
 
-    co_await interE_out.put(interE);
-    co_await elecE_out.put(elecE);
+    //co_await interE_out.put(interE);
+    //co_await elecE_out.put(elecE);
+
+    scalar_out_buf[0] = interE;
+    scalar_out_buf[1] = elecE;
 }
 
 COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
@@ -923,14 +925,13 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
     IoConnector<const double> atom_idxyzq_buf,
     IoConnector<const double> grid_buf,
     IoConnector<double> peratom_vdw_buf,
-    IoConnector<double> peratom_elec_buf
+    IoConnector<double> peratom_elec_buf,
+    IoConnector<double> scalar_out_buf
 ) {
     IoConnector<InterE_AtomData> atom_data_stream;
     IoConnector<uint32_t> dram_address_stream;
     IoConnector<double> dram_data_stream;
     IoConnector<InterE_AtomEnergy> atom_energy_stream;
-    IoConnector<double> interE_out;
-    IoConnector<double> elecE_out;
 
     CGSIM_AUTO_NAME(num_atoms_in);
     CGSIM_AUTO_NAME(outofgrid_tolerance_in);
@@ -943,8 +944,7 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
     CGSIM_AUTO_NAME(grid_buf);
     CGSIM_AUTO_NAME(peratom_vdw_buf);
     CGSIM_AUTO_NAME(peratom_elec_buf);
-    CGSIM_AUTO_NAME(interE_out);
-    CGSIM_AUTO_NAME(elecE_out);
+    CGSIM_AUTO_NAME(scalar_out_buf);
 
     kernel_interE_BuildAtomData(
         num_atoms_in,
@@ -982,11 +982,10 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
         enable_peratom_outputs_in,
         peratom_vdw_buf,
         peratom_elec_buf,
-        interE_out,
-        elecE_out
+        scalar_out_buf
     );
 
-    return std::tuple(interE_out, elecE_out);
+    return std::tuple();
 }>;
 
 
@@ -1021,8 +1020,9 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
     }
 
     // Run graph
-    double interE = 0;
-    double elecE  = 0;
+    std::vector<double> out_buf(2, 0.0); // interE, elecE
+    double& interE = out_buf[0];
+    double& elecE  = out_buf[1];
 
     const auto result = interE_graph(
         ScalarDataSource<uint32_t>(myligand->num_of_atoms),
@@ -1036,8 +1036,7 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
         RuntimeMemoryBuffer(gridMemoryRegion),
         memBuffer(peratom_vdw_buf),
         memBuffer(peratom_elec_buf),
-        ScalarDataSink<double>(interE),
-        ScalarDataSink<double>(elecE)
+        memBuffer(out_buf)
     );
 
     result.dump(std::cerr);
