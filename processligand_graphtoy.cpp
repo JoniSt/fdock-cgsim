@@ -1041,7 +1041,7 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
         mygrid->size_xyz[1],
         mygrid->size_xyz[2],
         myligand->num_of_atypes,
-        enablePerAtomOutputs,
+        uint32_t(enablePerAtomOutputs),
         atom_idxyzq_tpc,
         grid_tpc,
         peratom_vdw_tpc,
