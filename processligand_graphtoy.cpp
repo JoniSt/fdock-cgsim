@@ -897,8 +897,8 @@ COMPUTE_KERNEL_TEMPLATE(hls, kernel_fdock_ReadDram,
 ) {
     debug_out_buf[4] = 1;
 
-#pragma HLS pipeline off
     for (uint32_t dbg_step = 0;; ++dbg_step) {
+#pragma HLS pipeline off
         const uint32_t addr = co_await address_in.get();
         //debug_out_buf[4] = 2;
         debug_out_buf[5] = addr;
