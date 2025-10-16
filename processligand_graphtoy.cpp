@@ -687,9 +687,12 @@ COMPUTE_KERNEL(hls, kernel_interE_BuildAtomData,
     KernelReadPort<int, s_iop_rtp> grid_size_y_in,
     KernelReadPort<int, s_iop_rtp> grid_size_z_in,
     KernelMemoryPort<const double> atom_idxyzq_buf,
-    KernelWritePort<InterE_AtomData> atom_data_out
+    KernelWritePort<InterE_AtomData> atom_data_out,
+    KernelMemoryPort<volatile uint32_t> debug_out_buf
 ) {
 #pragma HLS allocation operation instances=dmul limit=3
+
+    debug_out_buf[0] = 1;
 
     uint32_t num_atoms = co_await num_atoms_in.get();
     num_atoms = std::min(num_atoms, uint32_t(g_maxNumAtoms));
@@ -701,8 +704,12 @@ COMPUTE_KERNEL(hls, kernel_interE_BuildAtomData,
 
     const std::array<int, 3> size_xyz = {grid_size_x, grid_size_y, grid_size_z};
 
+    debug_out_buf[0] = 2;
+
     for (uint32_t i = 0; i < num_atoms; ++i) {
         InterE_AtomData outputData{};
+
+        debug_out_buf[0] = 1024 + 2 * i;
 
         double inputData[5];
         for (size_t j = 0; j < 5; ++j) {
@@ -735,10 +742,16 @@ COMPUTE_KERNEL(hls, kernel_interE_BuildAtomData,
         }
 
         co_await atom_data_out.put(outputData);
+
+        debug_out_buf[0] = 1024 + 2 * i + 1;
     }
+
+    debug_out_buf[0] = UINT32_MAX - 1;
 
     // Terminate pipeline
     co_await atom_data_out.put(InterE_AtomData{.m_terminate_processing = true});
+
+    debug_out_buf[0] = UINT32_MAX;
 }
 
 static constexpr uint32_t s_terminate_dram_reader_sentinel = UINT32_MAX;
@@ -749,8 +762,11 @@ COMPUTE_KERNEL(hls, kernel_interE_GenerateDramAddresses,
     KernelReadPort<int, s_iop_rtp> grid_size_x_in,
     KernelReadPort<int, s_iop_rtp> grid_size_y_in,
     KernelReadPort<int, s_iop_rtp> grid_size_z_in,
-    KernelReadPort<int, s_iop_rtp> num_of_atypes_in
+    KernelReadPort<int, s_iop_rtp> num_of_atypes_in,
+    KernelMemoryPort<volatile uint32_t> debug_out_buf
 ) {
+    debug_out_buf[1] = 1;
+
     const int grid_size_x = co_await grid_size_x_in.get();
     const int grid_size_y = co_await grid_size_y_in.get();
     const int grid_size_z = co_await grid_size_z_in.get();
@@ -758,8 +774,14 @@ COMPUTE_KERNEL(hls, kernel_interE_GenerateDramAddresses,
 
     const std::array<int, 3> size_xyz = {grid_size_x, grid_size_y, grid_size_z};
 
-    while (true) {
+    debug_out_buf[1] = 2;
+
+    for (uint32_t dbg_step = 0;; ++dbg_step) {
+        debug_out_buf[1] = 1024 + 4 * dbg_step;
+
         const auto data = co_await atom_data_in.get();
+
+        debug_out_buf[1] = 1024 + 4 * dbg_step + 1;
 
         if (data.m_terminate_processing) {
             break;
@@ -791,27 +813,43 @@ COMPUTE_KERNEL(hls, kernel_interE_GenerateDramAddresses,
                 const int finalAddr = gridOffset + coordOffset;
                 //BOOST_ASSERT(finalAddr >= 0);
                 co_await address_out.put(uint32_t(finalAddr));
+
+                debug_out_buf[1] = 1024 + 4 * dbg_step + 2;
             }
         }
+
+        debug_out_buf[1] = 1024 + 4 * dbg_step + 3;
     }
+
+    debug_out_buf[1] = UINT32_MAX - 1;
 
     // Terminate DRAM reader
     co_await address_out.put(s_terminate_dram_reader_sentinel);
+
+    debug_out_buf[1] = UINT32_MAX;
 }
 
 COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
     KernelReadPort<InterE_AtomData> atom_data_in,
     KernelReadPort<double> dram_data_in,
-    KernelWritePort<InterE_AtomEnergy> atom_energy_out
+    KernelWritePort<InterE_AtomEnergy> atom_energy_out,
+    KernelMemoryPort<volatile uint32_t> debug_out_buf
 ) {
 #pragma HLS allocation operation instances=dmul limit=4
 
+    debug_out_buf[2] = 1;
+
     enum class GridType { ATOM, ELECTROSTATIC, DESOLVATION };
 
-    while (true) {
+    for (uint32_t dbg_step = 0;; ++dbg_step) {
+        debug_out_buf[2] = 1024 + 4 * dbg_step;
+
         const auto data = co_await atom_data_in.get();
 
+        debug_out_buf[2] = 1024 + 4 * dbg_step + 1;
+
         if (data.m_terminate_processing) {
+            debug_out_buf[2] = UINT32_MAX - 1;
             co_await atom_energy_out.put(InterE_AtomEnergy{.m_terminate_processing = true});
             break;
         }
@@ -841,8 +879,14 @@ COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
             }
         }
 
+        debug_out_buf[2] = 1024 + 4 * dbg_step + 2;
+
         co_await atom_energy_out.put(result);
+
+        debug_out_buf[2] = 1024 + 4 * dbg_step + 3;
     }
+
+    debug_out_buf[2] = UINT32_MAX;
 }
 
 COMPUTE_KERNEL_TEMPLATE(hls, kernel_fdock_ReadDram,
@@ -867,9 +911,12 @@ COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
     KernelReadPort<bool, s_iop_rtp> enable_peratom_outputs_in,
     KernelMemoryPort<double> vdw_buf,
     KernelMemoryPort<double> elec_buf,
-    KernelMemoryPort<double> scalar_out_buf
+    KernelMemoryPort<double> scalar_out_buf,
+    KernelMemoryPort<volatile uint32_t> debug_out_buf
 ) {
 #pragma HLS allocation operation instances=dadd limit=2
+
+    debug_out_buf[3] = 1;
 
     const bool enable_peratom_outputs = co_await enable_peratom_outputs_in.get();
 
@@ -878,7 +925,11 @@ COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
 
     uint32_t peratom_index = 0;
 
-    while (true) {
+    debug_out_buf[3] = 2;
+
+    for (uint32_t dbg_step = 0;; ++dbg_step) {
+        debug_out_buf[3] = 1024 + 2 * dbg_step;
+
         const auto data = co_await atom_energy_in.get();
 
         if (data.m_terminate_processing) {
@@ -905,13 +956,19 @@ COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
             elec_buf[peratom_index] = elec;
             peratom_index++;
         }
+
+        debug_out_buf[3] = 1024 + 2 * dbg_step + 1;
     }
 
     //co_await interE_out.put(interE);
     //co_await elecE_out.put(elecE);
 
+    debug_out_buf[3] = UINT32_MAX - 1;
+
     scalar_out_buf[0] = interE;
     scalar_out_buf[1] = elecE;
+
+    debug_out_buf[3] = UINT32_MAX;
 }
 
 COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
@@ -926,7 +983,8 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
     IoConnector<const double> grid_buf,
     IoConnector<double> peratom_vdw_buf,
     IoConnector<double> peratom_elec_buf,
-    IoConnector<double> scalar_out_buf
+    IoConnector<double> scalar_out_buf,
+    IoConnector<volatile uint32_t> debug_status_buf
 ) {
     IoConnector<InterE_AtomData> atom_data_stream;
     IoConnector<uint32_t> dram_address_stream;
@@ -953,7 +1011,8 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
         grid_size_y_in,
         grid_size_z_in,
         atom_idxyzq_buf,
-        atom_data_stream
+        atom_data_stream,
+        debug_status_buf
     );
 
     kernel_interE_GenerateDramAddresses(
@@ -962,7 +1021,8 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
         grid_size_x_in,
         grid_size_y_in,
         grid_size_z_in,
-        num_of_atypes_in
+        num_of_atypes_in,
+        debug_status_buf
     );
 
     kernel_fdock_ReadDram<double>(
@@ -974,7 +1034,8 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
     kernel_interE_InterpolateEnergy(
         atom_data_stream,
         dram_data_stream,
-        atom_energy_stream
+        atom_energy_stream,
+        debug_status_buf
     );
 
     kernel_interE_AccumulateResults(
@@ -982,7 +1043,8 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
         enable_peratom_outputs_in,
         peratom_vdw_buf,
         peratom_elec_buf,
-        scalar_out_buf
+        scalar_out_buf,
+        debug_status_buf
     );
 
     return std::tuple();
@@ -1019,6 +1081,9 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
         peratom_elec_buf.resize(myligand->num_of_atoms);
     }
 
+    volatile uint32_t debug_status_buf[4] = {0, 0, 0, 0};
+    const auto debug_status_span = std::span<volatile uint32_t>(+debug_status_buf, 4);
+
     // Run graph
     std::vector<double> out_buf(2, 0.0); // interE, elecE
     double& interE = out_buf[0];
@@ -1033,6 +1098,7 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
     auto peratom_vdw_tpc = tapasco_outbuf<double>(peratom_vdw_buf);
     auto peratom_elec_tpc = tapasco_outbuf<double>(peratom_elec_buf);
     auto out_tpc = tapasco_outbuf<double>(out_buf);
+    auto debug_status_tpc = tapasco_outbuf<volatile uint32_t>(debug_status_span);
 
     auto job = tpc.launch(peid,
         myligand->num_of_atoms,
@@ -1046,8 +1112,28 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
         grid_tpc,
         peratom_vdw_tpc,
         peratom_elec_tpc,
-        out_tpc
+        out_tpc,
+        debug_status_tpc
     );
+
+    uint32_t last_debug[4] = {0, 0, 0, 0};
+    while (!std::ranges::all_of(last_debug, [](uint32_t v) { return v == UINT32_MAX; })) {
+        bool any_changed = false;
+
+        for (size_t i = 0; i < 4; ++i) {
+            const uint32_t v = debug_status_buf[i];
+            any_changed |= (v != last_debug[i]);
+            last_debug[i] = v;
+        }
+
+        if (any_changed) {
+            std::cerr << "interE debug:";
+            for (const auto& val: last_debug) {
+                std::cerr << ' ' << val;
+            }
+            std::cerr << std::endl;
+        }
+    }
 
     job();
 #else
@@ -1063,11 +1149,18 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
         RuntimeMemoryBuffer(gridMemoryRegion),
         memBuffer(peratom_vdw_buf),
         memBuffer(peratom_elec_buf),
-        memBuffer(out_buf)
+        memBuffer(out_buf),
+        RuntimeMemoryBuffer(debug_status_span)
     );
 
     result.dump(std::cerr);
 #endif
+
+    for (size_t i = 0; i < 4; ++i) {
+        if (debug_status_buf[i] != UINT32_MAX) {
+            std::cerr << "\ninterE_graph: debug_status_buf[" << i << "] = " << debug_status_buf[i] << std::endl;
+        }
+    }
 
     return {
         .m_interE = interE,
