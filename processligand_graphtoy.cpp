@@ -897,9 +897,9 @@ COMPUTE_KERNEL_TEMPLATE(hls, kernel_fdock_ReadDram,
 ) {
     debug_out_buf[4] = 1;
 
-    while (true) {
+    for (uint32_t dbg_step = 0;; ++dbg_step) {
         const uint32_t addr = co_await address_in.get();
-        debug_out_buf[4] = 2;
+        //debug_out_buf[4] = 2;
         debug_out_buf[5] = addr;
 
         if (addr == s_terminate_dram_reader_sentinel) {
@@ -907,9 +907,9 @@ COMPUTE_KERNEL_TEMPLATE(hls, kernel_fdock_ReadDram,
         }
 
         const T data = dram_buf[addr];
-        debug_out_buf[4] = 3;
         co_await data_out.put(data);
-        debug_out_buf[4] = 4;
+
+        debug_out_buf[4] = 1024 + dbg_step;
     }
 
     debug_out_buf[4] = UINT32_MAX;
