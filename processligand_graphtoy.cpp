@@ -892,18 +892,27 @@ COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
 COMPUTE_KERNEL_TEMPLATE(hls, kernel_fdock_ReadDram,
     KernelReadPort<uint32_t> address_in,
     KernelMemoryPort<const T> dram_buf,
-    KernelWritePort<T> data_out
+    KernelWritePort<T> data_out,
+    KernelMemoryPort<volatile uint32_t> debug_out_buf
 ) {
+    debug_out_buf[4] = 1;
+
     while (true) {
         const uint32_t addr = co_await address_in.get();
+        debug_out_buf[4] = 2;
+        debug_out_buf[5] = addr;
 
         if (addr == s_terminate_dram_reader_sentinel) {
             break;
         }
 
         const T data = dram_buf[addr];
+        debug_out_buf[4] = 3;
         co_await data_out.put(data);
+        debug_out_buf[4] = 4;
     }
+
+    debug_out_buf[4] = UINT32_MAX;
 }
 
 COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
@@ -1028,7 +1037,8 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
     kernel_fdock_ReadDram<double>(
         dram_address_stream,
         grid_buf,
-        dram_data_stream
+        dram_data_stream,
+        debug_status_buf
     );
 
     kernel_interE_InterpolateEnergy(
@@ -1081,8 +1091,8 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
         peratom_elec_buf.resize(myligand->num_of_atoms);
     }
 
-    volatile uint32_t debug_status_buf[4] = {0, 0, 0, 0};
-    const auto debug_status_span = std::span<volatile uint32_t>(+debug_status_buf, 4);
+    volatile uint32_t debug_status_buf[6] = {0};
+    const auto debug_status_span = std::span<volatile uint32_t>(+debug_status_buf, std::size(debug_status_buf));
 
     // Run graph
     std::vector<double> out_buf(2, 0.0); // interE, elecE
@@ -1116,11 +1126,11 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
         debug_status_tpc
     );
 
-    uint32_t last_debug[4] = {0, 0, 0, 0};
+    uint32_t last_debug[std::size(debug_status_buf)] = {0};
     while (!std::ranges::all_of(last_debug, [](uint32_t v) { return v == UINT32_MAX; })) {
         bool any_changed = false;
 
-        for (size_t i = 0; i < 4; ++i) {
+        for (size_t i = 0; i < std::size(debug_status_buf); ++i) {
             const uint32_t v = debug_status_buf[i];
             any_changed |= (v != last_debug[i]);
             last_debug[i] = v;
