@@ -1509,6 +1509,27 @@ static auto change_conform_graphtoy(const Liganddata* myligand, const double gen
     return output_buf_struct;
 }
 
+static double change_conform_ligand_size(const Liganddata* myligand) {
+    double min_xyz[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max()};
+    double max_xyz[3] = {std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest()};
+
+    for (size_t i = 0; i < myligand->num_of_atoms; ++i) {
+        const double* atom_xyz = &myligand->atom_idxyzq[i][1];
+
+        for (size_t j = 0; j < 3; ++j) {
+            min_xyz[j] = std::min(min_xyz[j], atom_xyz[j]);
+            max_xyz[j] = std::max(max_xyz[j], atom_xyz[j]);
+        }
+    }
+
+    double max_size = 0;
+    for (size_t j = 0; j < 3; ++j) {
+        max_size = std::max(max_size, max_xyz[j] - min_xyz[j]);
+    }
+
+    return max_size;
+}
+
 void change_conform(Liganddata* myligand, const double genotype [], int debug) {
     std::unique_ptr<Liganddata> originalLigand = nullptr;
     if (g_graphdumpsEnabled) {
@@ -1538,7 +1559,12 @@ void change_conform(Liganddata* myligand, const double genotype [], int debug) {
     }
 
     if (max_deviation != 0 || !id_q_okay) {
-        std::cerr << "ChangeConform mismatch: max deviation=" << max_deviation
+        const double ligand_size = change_conform_ligand_size(myligand);
+        if (ligand_size > 0) {
+            max_deviation /= ligand_size;
+        }
+
+        std::cerr << "ChangeConform mismatch: max deviation rel=" << max_deviation
                   << ", id/q match=" << (id_q_okay ? "yes" : "no") << "\n";
     }
 
