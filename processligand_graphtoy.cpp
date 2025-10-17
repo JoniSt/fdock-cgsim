@@ -92,6 +92,8 @@ static bool g_graphdumpsEnabled = false;
 static const std::string g_dumpDirectory = "dumps";
 
 // Acceptable mismatch between original algorithm and HW implementation
+static constexpr double s_intraE_tolerance_rel = 1e-10;
+static constexpr double s_interE_tolerance_rel = 1e-10;
 static constexpr double s_changeConform_tolerance_rel = 1e-10;
 
 //using AtomIndexPair = std::pair<uint8_t, uint8_t>;
@@ -588,7 +590,10 @@ double calc_intraE(const Liganddata* myligand, double dcutoff, char ignore_desol
     const double originalResult = calc_intraE_original(myligand, dcutoff, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp, debug);
     const double graphResult    = calc_intraE_graphtoy(myligand, dcutoff, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp);
 
-    if (graphResult != originalResult) {
+    const double absTolerance = s_intraE_tolerance_rel * std::fabs(originalResult);
+    const double diff = std::fabs(originalResult - graphResult);
+
+    if (diff > absTolerance) {
         std::cerr << "IntraE mismatch: original=" << originalResult << ", graph=" << graphResult << "\n";
     }
 
@@ -1118,7 +1123,10 @@ double calc_interE(const Gridinfo* mygrid, const Liganddata* myligand, const dou
     const double originalResult = calc_interE_original(mygrid, myligand, fgrids, outofgrid_tolerance, debug);
     const double graphResult = calc_interE_graphtoy(mygrid, myligand, fgrids, outofgrid_tolerance, false).m_interE;
 
-    if (graphResult != originalResult) {
+    const double absTolerance = s_interE_tolerance_rel * std::fabs(originalResult);
+    const double diff = std::fabs(originalResult - graphResult);
+
+    if (diff > absTolerance) {
         std::cerr << "InterE mismatch: original=" << originalResult << " graph=" << graphResult << "\n";
     }
 
@@ -1165,11 +1173,24 @@ void calc_interE_peratom(const Gridinfo* mygrid, const Liganddata* myligand, con
         return;
     }
 
-    if (!std::ranges::equal(graphResult.m_peratomVdW, std::span(peratom_vdw, num_atoms))) {
+    const auto check_peratom = [](const std::vector<double>& graphValues, const double* originalValues) {
+        for (size_t i = 0; i < graphValues.size(); ++i) {
+            const double originalValue = originalValues[i];
+            const double graphValue = graphValues[i];
+
+            const double absTolerance = s_interE_tolerance_rel * std::fabs(originalValue);
+            const double diff = std::fabs(originalValue - graphValue);
+
+            if (diff > absTolerance) return true;
+        }
+        return false;
+    };
+
+    if (check_peratom(graphResult.m_peratomVdW, peratom_vdw)) {
         std::cerr << "InterE per-atom VdW mismatch\n";
     }
 
-    if (!std::ranges::equal(graphResult.m_peratomElec, std::span(peratom_elec, num_atoms))) {
+    if (check_peratom(graphResult.m_peratomElec, peratom_elec)) {
         std::cerr << "InterE per-atom Elec mismatch\n";
     }
 }
