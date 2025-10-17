@@ -777,6 +777,7 @@ COMPUTE_KERNEL(hls, kernel_interE_GenerateDramAddresses,
     debug_out_buf[1] = 2;
 
     for (uint32_t dbg_step = 0;; ++dbg_step) {
+#pragma HLS pipeline off
         debug_out_buf[1] = 1024 + 4 * dbg_step;
 
         const auto data = co_await atom_data_in.get();
@@ -898,7 +899,7 @@ COMPUTE_KERNEL_TEMPLATE(hls, kernel_fdock_ReadDram,
     debug_out_buf[4] = 1;
 
     for (uint32_t dbg_step = 0;; ++dbg_step) {
-#pragma HLS pipeline off
+#pragma HLS pipeline rewind style=frp
         const uint32_t addr = co_await address_in.get();
         //debug_out_buf[4] = 2;
         debug_out_buf[5] = addr;
