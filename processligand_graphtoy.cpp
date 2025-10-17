@@ -756,6 +756,10 @@ COMPUTE_KERNEL(hls, kernel_interE_BuildAtomData,
 
 static constexpr uint32_t s_terminate_dram_reader_sentinel = UINT32_MAX;
 
+static constexpr uint32_t s_interE_coords_per_cube = 8;
+static constexpr uint32_t s_interE_grids_per_atom = 3;
+static constexpr uint32_t s_interE_addresses_per_atom = s_interE_coords_per_cube * s_interE_grids_per_atom;
+
 COMPUTE_KERNEL(hls, kernel_interE_GenerateDramAddresses,
     KernelReadPort<InterE_AtomData> atom_data_in,
     KernelWritePort<uint32_t> address_out,
@@ -791,7 +795,7 @@ COMPUTE_KERNEL(hls, kernel_interE_GenerateDramAddresses,
         if (data.m_isOutOfGrid)
             continue;
 
-        std::array<int, 8> coordOffsets = {
+        std::array<int, s_interE_coords_per_cube> coordOffsets = {
             interE_gridCoordsToArrayOffset(size_xyz, data.m_z_low, data.m_y_low, data.m_x_low),
             interE_gridCoordsToArrayOffset(size_xyz, data.m_z_low, data.m_y_low, data.m_x_high),
             interE_gridCoordsToArrayOffset(size_xyz, data.m_z_low, data.m_y_high, data.m_x_low),
@@ -802,7 +806,7 @@ COMPUTE_KERNEL(hls, kernel_interE_GenerateDramAddresses,
             interE_gridCoordsToArrayOffset(size_xyz, data.m_z_high, data.m_y_high, data.m_x_high)
         };
 
-        std::array<int, 3> gridNumbers = {
+        std::array<int, s_interE_grids_per_atom> gridNumbers = {
             data.m_type_id,     // energy contribution of the current grid type
             num_of_atypes,      // energy contribution of the electrostatic grid
             num_of_atypes + 1   // energy contribution of the desolvation grid
@@ -890,31 +894,51 @@ COMPUTE_KERNEL(hls, kernel_interE_InterpolateEnergy,
     debug_out_buf[2] = UINT32_MAX;
 }
 
-COMPUTE_KERNEL_TEMPLATE(hls, kernel_fdock_ReadDram,
+COMPUTE_KERNEL_TEMPLATE(hls, kernel_InterE_ReadGrid,
     KernelReadPort<uint32_t> address_in,
     KernelMemoryPort<const T> dram_buf,
-    KernelWritePort<T> data_out,
-    KernelMemoryPort<volatile uint32_t> debug_out_buf
+    KernelWritePort<T> data_out
 ) {
-    debug_out_buf[4] = 1;
+    // Slightly weird pipelining setup:
+    // Read a whole atom's worth of grid data into a buffer with
+    // pipelined reads, then send it to the downstream kernel all
+    // at once.
+    //
+    // This avoids a possible deadlock with full pipelining:
+    // - This kernel issues a whole bunch of reads to DRAM
+    // - But it can't receive the read responses until there's space in data_out
+    // - This fills the memory subsystem's queues, causing it to stall
+    // - The downstream kernels can't proceed because they have to access DRAM too
+    // - So they'll never read from data_out
+    // - Deadlock.
+    //
+    // Buffering the read data ensures that this kernel can always
+    // accept read responses from DRAM, even if the downstream kernel
+    // is stalled.
 
-    for (uint32_t dbg_step = 0;; ++dbg_step) {
-#pragma HLS pipeline rewind style=frp
-        const uint32_t addr = co_await address_in.get();
-        //debug_out_buf[4] = 2;
-        debug_out_buf[5] = addr;
+    T intermediate_buffer[s_interE_addresses_per_atom];
 
-        if (addr == s_terminate_dram_reader_sentinel) {
-            break;
+    while (true) {
+#pragma HLS pipeline off
+
+        for (uint32_t i = 0; i < s_interE_addresses_per_atom; ++i) {
+#pragma HLS pipeline style=frp
+            const uint32_t addr = co_await address_in.get();
+
+            if ((i == 0) && (addr == s_terminate_dram_reader_sentinel)) {
+                goto out;
+            }
+
+            intermediate_buffer[i] = dram_buf[addr];
         }
 
-        const T data = dram_buf[addr];
-        co_await data_out.put(data);
-
-        debug_out_buf[4] = 1024 + dbg_step;
+        for (uint32_t i = 0; i < s_interE_addresses_per_atom; ++i) {
+#pragma HLS pipeline style=stp
+            co_await data_out.put(intermediate_buffer[i]);
+        }
     }
 
-    debug_out_buf[4] = UINT32_MAX;
+    out:;
 }
 
 COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
@@ -1036,11 +1060,10 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
         debug_status_buf
     );
 
-    kernel_fdock_ReadDram<double>(
+    kernel_InterE_ReadGrid<double>(
         dram_address_stream,
         grid_buf,
-        dram_data_stream,
-        debug_status_buf
+        dram_data_stream
     );
 
     kernel_interE_InterpolateEnergy(
@@ -1093,7 +1116,7 @@ InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myl
         peratom_elec_buf.resize(myligand->num_of_atoms);
     }
 
-    volatile uint32_t debug_status_buf[6] = {0};
+    volatile uint32_t debug_status_buf[4] = {0};
     const auto debug_status_span = std::span<volatile uint32_t>(+debug_status_buf, std::size(debug_status_buf));
 
     // Run graph
