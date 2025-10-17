@@ -91,6 +91,9 @@ static constexpr size_t g_fifoDepthFor = std::max(size_t(1), g_aieAxiFifoDepthBy
 static bool g_graphdumpsEnabled = false;
 static const std::string g_dumpDirectory = "dumps";
 
+// Acceptable mismatch between original algorithm and HW implementation
+static constexpr double s_changeConform_tolerance_rel = 1e-10;
+
 //using AtomIndexPair = std::pair<uint8_t, uint8_t>;
 
 struct AtomIndexPair {
@@ -1558,12 +1561,12 @@ void change_conform(Liganddata* myligand, const double genotype [], int debug) {
         }
     }
 
-    if (max_deviation != 0 || !id_q_okay) {
-        const double ligand_size = change_conform_ligand_size(myligand);
-        if (ligand_size > 0) {
-            max_deviation /= ligand_size;
-        }
+    const double ligand_size = change_conform_ligand_size(myligand);
+    if (ligand_size > 0) {
+        max_deviation /= ligand_size;
+    }
 
+    if ((max_deviation > s_changeConform_tolerance_rel) || !id_q_okay) {
         std::cerr << "ChangeConform mismatch: max deviation rel=" << max_deviation
                   << ", id/q match=" << (id_q_okay ? "yes" : "no") << "\n";
     }
