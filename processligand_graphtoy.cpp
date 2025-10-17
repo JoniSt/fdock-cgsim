@@ -1523,22 +1523,23 @@ void change_conform(Liganddata* myligand, const double genotype [], int debug) {
     static_assert(std::is_pointer_interconvertible_with_class(&InterE_AtomInput::m_atom_idxyzq));
 #endif
 
-    const size_t numBytes = graphResult.size() * sizeof(graphResult[0]);
-    if (std::memcmp(graphResult.data(), &myligand->atom_idxyzq[0], numBytes)) {
-        std::cerr << "ChangeConform mismatch\n";
+    double max_deviation = 0;
+    bool id_q_okay = true;
+    for (size_t i = 0; i < graphResult.size(); ++i) {
+        const auto& a = graphResult[i];
+        const auto& b = myligand->atom_idxyzq[i];
 
-        /*for (size_t i = 0; i < graphResult.size(); ++i) {
-            const auto& a = graphResult[i];
-            const auto& b = myligand->atom_idxyzq[i];
+        double xyz_dist = distance(&a.m_atom_idxyzq[1], &b[1]);
+        max_deviation = std::max(max_deviation, xyz_dist);
 
-            if (std::memcmp(&a, &b, sizeof(a))) {
-                std::cerr << " Atom " << i << " mismatch: "
-                          << a.m_atom_idxyzq[0] << "," << a.m_atom_idxyzq[1] << "," << a.m_atom_idxyzq[2] << "," << a.m_atom_idxyzq[3] << "," << a.m_atom_idxyzq[4]
-                          << " vs "
-                          << b[0] << "," << b[1] << "," << b[2] << "," << b[3] << "," << b[4]
-                          << "\n";
-            }
-        }*/
+        if (a.m_atom_idxyzq[0] != b[0] || a.m_atom_idxyzq[4] != b[4]) {
+            id_q_okay = false;
+        }
+    }
+
+    if (max_deviation != 0 || !id_q_okay) {
+        std::cerr << "ChangeConform mismatch: max deviation=" << max_deviation
+                  << ", id/q match=" << (id_q_okay ? "yes" : "no") << "\n";
     }
 
     if (g_graphdumpsEnabled) {
