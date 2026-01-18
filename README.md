@@ -4,10 +4,10 @@
 
 ## Build (CMake, C++23)
 
-This project now uses CMake. Build out-of-source:
+This project now uses CMake. Build out-of-source with Clang (16 or later):
 
 ```
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
 cmake --build build -j
 ```
 
