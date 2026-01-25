@@ -444,6 +444,40 @@ COMPUTE_KERNEL(hls, kernel_IntraE_Compute_VW_EL_Desolv,
     outs[2] = desolv;
 }
 
+static constexpr void build_intraE_core(
+    IoConnector<uint32_t> num_atoms_in,
+    IoConnector<const char> intraE_contributors_buf,
+    IoConnector<double> atom_idxyzq_stream,
+    IoConnector<const char> is_hbond_lut_buf,
+    IoConnector<const double> volume_buf,
+    IoConnector<const double> solpar_buf,
+    IoConnector<const double> vwpars_a_buf,
+    IoConnector<const double> vwpars_b_buf,
+    IoConnector<const double> vwpars_c_buf,
+    IoConnector<const double> vwpars_d_buf,
+    IoConnector<double> dcutoff_in,
+    IoConnector<double> qasp_in,
+    IoConnector<double> scaled_AD4_coeff_elec_in,
+    IoConnector<double> AD4_coeff_desolv_in,
+    IoConnector<double> out_buf
+) {
+    IoConnector<AtomIndexPair> atom_pairs;
+    IoConnector<IntraE_AtomPair>
+        atom_data_fetched,
+        atom_data_distance_checked,
+        atom_data_with_volume,
+        atom_data_with_vw_fetched,
+        atom_data_with_vw_scaled;
+
+    kernel_IntraE_GenAtomPairIndices(num_atoms_in, intraE_contributors_buf, atom_pairs);
+    kernel_IntraE_FetchAtomData(num_atoms_in, atom_pairs, atom_idxyzq_stream, atom_data_fetched);
+    kernel_IntraE_SetDistanceID_CheckHBond(atom_data_fetched, atom_data_distance_checked, dcutoff_in, is_hbond_lut_buf);
+    kernel_IntraE_Volume_Solpar(atom_data_distance_checked, atom_data_with_volume, qasp_in, volume_buf, solpar_buf);
+    kernel_IntraE_FetchVWpars(atom_data_with_volume, atom_data_with_vw_fetched, vwpars_a_buf, vwpars_b_buf, vwpars_c_buf, vwpars_d_buf);
+    kernel_IntraE_ScaleVWparsWithDistance(atom_data_with_vw_fetched, atom_data_with_vw_scaled);
+    kernel_IntraE_Compute_VW_EL_Desolv(atom_data_with_vw_scaled, scaled_AD4_coeff_elec_in, AD4_coeff_desolv_in, out_buf);
+}
+
 COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
     IoConnector<uint32_t> num_atoms_in,
     IoConnector<const char> intraE_contributors_buf,
@@ -461,14 +495,7 @@ COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
     IoConnector<double> AD4_coeff_desolv_in,
     IoConnector<double> out_buf
 ) {
-    IoConnector<AtomIndexPair> atom_pairs;
     IoConnector<double> atom_idxyzq_stream;
-    IoConnector<IntraE_AtomPair>
-        atom_data_fetched,
-        atom_data_distance_checked,
-        atom_data_with_volume,
-        atom_data_with_vw_fetched,
-        atom_data_with_vw_scaled;
 
     CGSIM_AUTO_NAME(num_atoms_in);
     CGSIM_AUTO_NAME(intraE_contributors_buf);
@@ -486,14 +513,25 @@ COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
     CGSIM_AUTO_NAME(AD4_coeff_desolv_in);
     CGSIM_AUTO_NAME(out_buf);
 
-    kernel_IntraE_GenAtomPairIndices(num_atoms_in, intraE_contributors_buf, atom_pairs);
     kernel_StreamAtomIdxyzq(num_atoms_in, atom_idxyzq_buf, atom_idxyzq_stream);
-    kernel_IntraE_FetchAtomData(num_atoms_in, atom_pairs, atom_idxyzq_stream, atom_data_fetched);
-    kernel_IntraE_SetDistanceID_CheckHBond(atom_data_fetched, atom_data_distance_checked, dcutoff_in, is_hbond_lut_buf);
-    kernel_IntraE_Volume_Solpar(atom_data_distance_checked, atom_data_with_volume, qasp_in, volume_buf, solpar_buf);
-    kernel_IntraE_FetchVWpars(atom_data_with_volume, atom_data_with_vw_fetched, vwpars_a_buf, vwpars_b_buf, vwpars_c_buf, vwpars_d_buf);
-    kernel_IntraE_ScaleVWparsWithDistance(atom_data_with_vw_fetched, atom_data_with_vw_scaled);
-    kernel_IntraE_Compute_VW_EL_Desolv(atom_data_with_vw_scaled, scaled_AD4_coeff_elec_in, AD4_coeff_desolv_in, out_buf);
+
+    build_intraE_core(
+        num_atoms_in,
+        intraE_contributors_buf,
+        atom_idxyzq_stream,
+        is_hbond_lut_buf,
+        volume_buf,
+        solpar_buf,
+        vwpars_a_buf,
+        vwpars_b_buf,
+        vwpars_c_buf,
+        vwpars_d_buf,
+        dcutoff_in,
+        qasp_in,
+        scaled_AD4_coeff_elec_in,
+        AD4_coeff_desolv_in,
+        out_buf
+    );
 
     return std::tuple();
 }>;
@@ -985,7 +1023,7 @@ COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
     scalar_out_buf[1] = elecE;
 }
 
-COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
+static constexpr void build_interE_core(
     IoConnector<uint32_t> num_atoms_in,
     IoConnector<double> outofgrid_tolerance_in,
     IoConnector<int> grid_size_x_in,
@@ -993,36 +1031,16 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
     IoConnector<int> grid_size_z_in,
     IoConnector<int> num_of_atypes_in,
     IoConnector<bool> enable_peratom_outputs_in,
-    IoConnector<const double> atom_idxyzq_buf,
+    IoConnector<double> atom_idxyzq_stream,
     IoConnector<const double> grid_buf,
     IoConnector<double> peratom_vdw_buf,
     IoConnector<double> peratom_elec_buf,
     IoConnector<double> scalar_out_buf
 ) {
-    IoConnector<double> atom_idxyzq_stream;
     IoConnector<InterE_AtomData> atom_data_stream;
     IoConnector<uint32_t> dram_address_stream;
     IoConnector<double> dram_data_stream;
     IoConnector<InterE_AtomEnergy> atom_energy_stream;
-
-    CGSIM_AUTO_NAME(num_atoms_in);
-    CGSIM_AUTO_NAME(outofgrid_tolerance_in);
-    CGSIM_AUTO_NAME(grid_size_x_in);
-    CGSIM_AUTO_NAME(grid_size_y_in);
-    CGSIM_AUTO_NAME(grid_size_z_in);
-    CGSIM_AUTO_NAME(num_of_atypes_in);
-    CGSIM_AUTO_NAME(enable_peratom_outputs_in);
-    CGSIM_AUTO_NAME(atom_idxyzq_buf);
-    CGSIM_AUTO_NAME(grid_buf);
-    CGSIM_AUTO_NAME(peratom_vdw_buf);
-    CGSIM_AUTO_NAME(peratom_elec_buf);
-    CGSIM_AUTO_NAME(scalar_out_buf);
-
-    kernel_StreamAtomIdxyzq(
-        num_atoms_in,
-        atom_idxyzq_buf,
-        atom_idxyzq_stream
-    );
 
     kernel_interE_BuildAtomData(
         num_atoms_in,
@@ -1058,6 +1076,57 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
     kernel_interE_AccumulateResults(
         atom_energy_stream,
         enable_peratom_outputs_in,
+        peratom_vdw_buf,
+        peratom_elec_buf,
+        scalar_out_buf
+    );
+}
+
+COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
+    IoConnector<uint32_t> num_atoms_in,
+    IoConnector<double> outofgrid_tolerance_in,
+    IoConnector<int> grid_size_x_in,
+    IoConnector<int> grid_size_y_in,
+    IoConnector<int> grid_size_z_in,
+    IoConnector<int> num_of_atypes_in,
+    IoConnector<bool> enable_peratom_outputs_in,
+    IoConnector<const double> atom_idxyzq_buf,
+    IoConnector<const double> grid_buf,
+    IoConnector<double> peratom_vdw_buf,
+    IoConnector<double> peratom_elec_buf,
+    IoConnector<double> scalar_out_buf
+) {
+    IoConnector<double> atom_idxyzq_stream;
+
+    CGSIM_AUTO_NAME(num_atoms_in);
+    CGSIM_AUTO_NAME(outofgrid_tolerance_in);
+    CGSIM_AUTO_NAME(grid_size_x_in);
+    CGSIM_AUTO_NAME(grid_size_y_in);
+    CGSIM_AUTO_NAME(grid_size_z_in);
+    CGSIM_AUTO_NAME(num_of_atypes_in);
+    CGSIM_AUTO_NAME(enable_peratom_outputs_in);
+    CGSIM_AUTO_NAME(atom_idxyzq_buf);
+    CGSIM_AUTO_NAME(grid_buf);
+    CGSIM_AUTO_NAME(peratom_vdw_buf);
+    CGSIM_AUTO_NAME(peratom_elec_buf);
+    CGSIM_AUTO_NAME(scalar_out_buf);
+
+    kernel_StreamAtomIdxyzq(
+        num_atoms_in,
+        atom_idxyzq_buf,
+        atom_idxyzq_stream
+    );
+
+    build_interE_core(
+        num_atoms_in,
+        outofgrid_tolerance_in,
+        grid_size_x_in,
+        grid_size_y_in,
+        grid_size_z_in,
+        num_of_atypes_in,
+        enable_peratom_outputs_in,
+        atom_idxyzq_stream,
+        grid_buf,
         peratom_vdw_buf,
         peratom_elec_buf,
         scalar_out_buf
@@ -1253,7 +1322,7 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
     KernelReadPort<double> genotype_sincos_in,
     KernelMemoryPort<const double> rotbonds_moving_vectors_buf,
     KernelMemoryPort<const double> rotbonds_unit_vectors_buf,
-    KernelWritePort<ChangeConform_AtomData> atom_data_out
+    KernelWritePort<double> atom_idxyzq_out
 ) {
 #pragma HLS allocation operation instances=dmul limit=2
 //#pragma HLS allocation function instances=rotate_precomputed_sincos limit=1
@@ -1335,32 +1404,29 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
         // Apply global move
         vec3_accum(atom_xyz, globalmove_xyz);
 
-        co_await atom_data_out.put(data);
+        for (uint32_t i = 0; i < 5; ++i) {
+#pragma HLS unroll off
+            co_await atom_idxyzq_out.put(data.m_atomdata.m_atom_idxyzq[i]);
+        }
     }
-
-    // Terminate pipeline
-    co_await atom_data_out.put(ChangeConform_AtomData{.m_terminate_processing = true});
 }
 
 COMPUTE_KERNEL(hls, kernel_ChangeConform_WriteAtomsToMemory,
-    KernelReadPort<ChangeConform_AtomData> atom_data_in,
+    KernelReadPort<uint32_t, s_iop_rtp> num_atoms_in,
+    KernelReadPort<double> atom_idxyzq_in,
     KernelMemoryPort<double> output_buf
 ) {
-    uint32_t atom_idx = 0;
+    const uint32_t num_atoms = co_await num_atoms_in.get();
 
-    while (true) {
-        const auto data = co_await atom_data_in.get();
-        if (data.m_terminate_processing) {
-            break;
-        }
-
-        if (atom_idx < g_maxNumAtoms) {
-            for (uint32_t i = 0; i < 5; ++i) {
-                output_buf[atom_idx * 5 + i] = data.m_atomdata.m_atom_idxyzq[i];
+    for (uint32_t atom_idx = 0; atom_idx < num_atoms; ++atom_idx) {
+#pragma HLS unroll off
+        for (uint32_t i = 0; i < 5; ++i) {
+#pragma HLS unroll off
+            const double val = co_await atom_idxyzq_in.get();
+            if (atom_idx < g_maxNumAtoms) {
+                output_buf[atom_idx * 5 + i] = val;
             }
         }
-
-        atom_idx++;
     }
 }
 
@@ -1451,7 +1517,7 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_precomputeTrig,
     }
 }
 
-COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
+static constexpr IoConnector<double> build_changeConform_core(
     IoConnector<uint32_t> num_atoms_in,
     IoConnector<uint32_t> num_rotbonds_in,
     IoConnector<double> initial_move_x_in,
@@ -1461,24 +1527,11 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
     IoConnector<const char> rotbonds_buf,
     IoConnector<const double> rotbonds_moving_vectors_buf,
     IoConnector<const double> rotbonds_unit_vectors_buf,
-    IoConnector<const double> genotype_buf,
-    IoConnector<double> output_buf
+    IoConnector<const double> genotype_buf
 ) {
     IoConnector<ChangeConform_AtomData> atoms_read;
-    IoConnector<ChangeConform_AtomData> atoms_rotated;
     IoConnector<double> genotype_sincos_precomputed;
-
-    CGSIM_AUTO_NAME(num_atoms_in);
-    CGSIM_AUTO_NAME(num_rotbonds_in);
-    CGSIM_AUTO_NAME(initial_move_x_in);
-    CGSIM_AUTO_NAME(initial_move_y_in);
-    CGSIM_AUTO_NAME(initial_move_z_in);
-    CGSIM_AUTO_NAME(atom_data_buf);
-    CGSIM_AUTO_NAME(rotbonds_buf);
-    CGSIM_AUTO_NAME(rotbonds_moving_vectors_buf);
-    CGSIM_AUTO_NAME(rotbonds_unit_vectors_buf);
-    CGSIM_AUTO_NAME(genotype_buf);
-    CGSIM_AUTO_NAME(output_buf);
+    IoConnector<double> atom_idxyzq_stream;
 
     kernel_ChangeConform_precomputeTrig(
         num_rotbonds_in,
@@ -1503,11 +1556,53 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
         genotype_sincos_precomputed,
         rotbonds_moving_vectors_buf,
         rotbonds_unit_vectors_buf,
-        atoms_rotated
+        atom_idxyzq_stream
+    );
+
+    return atom_idxyzq_stream;
+}
+
+COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
+    IoConnector<uint32_t> num_atoms_in,
+    IoConnector<uint32_t> num_rotbonds_in,
+    IoConnector<double> initial_move_x_in,
+    IoConnector<double> initial_move_y_in,
+    IoConnector<double> initial_move_z_in,
+    IoConnector<const double> atom_data_buf,
+    IoConnector<const char> rotbonds_buf,
+    IoConnector<const double> rotbonds_moving_vectors_buf,
+    IoConnector<const double> rotbonds_unit_vectors_buf,
+    IoConnector<const double> genotype_buf,
+    IoConnector<double> output_buf
+) {
+    CGSIM_AUTO_NAME(num_atoms_in);
+    CGSIM_AUTO_NAME(num_rotbonds_in);
+    CGSIM_AUTO_NAME(initial_move_x_in);
+    CGSIM_AUTO_NAME(initial_move_y_in);
+    CGSIM_AUTO_NAME(initial_move_z_in);
+    CGSIM_AUTO_NAME(atom_data_buf);
+    CGSIM_AUTO_NAME(rotbonds_buf);
+    CGSIM_AUTO_NAME(rotbonds_moving_vectors_buf);
+    CGSIM_AUTO_NAME(rotbonds_unit_vectors_buf);
+    CGSIM_AUTO_NAME(genotype_buf);
+    CGSIM_AUTO_NAME(output_buf);
+
+    const auto atom_idxyzq_stream = build_changeConform_core(
+        num_atoms_in,
+        num_rotbonds_in,
+        initial_move_x_in,
+        initial_move_y_in,
+        initial_move_z_in,
+        atom_data_buf,
+        rotbonds_buf,
+        rotbonds_moving_vectors_buf,
+        rotbonds_unit_vectors_buf,
+        genotype_buf
     );
 
     kernel_ChangeConform_WriteAtomsToMemory(
-        atoms_rotated,
+        num_atoms_in,
+        atom_idxyzq_stream,
         output_buf
     );
 
