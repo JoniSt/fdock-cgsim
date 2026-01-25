@@ -9,16 +9,6 @@
 
 #include "searchoptimum.h"
 
-#include <math.h>
-#include <string.h>
-
-static int double_bitwise_equal_or_both_nan(double a, double b)
-{
-	if (isnan(a) && isnan(b))
-		return 1;
-	return memcmp(&a, &b, sizeof(double)) == 0;
-}
-
 static void eval_intra_interE_for_genotype(
 	const Liganddata* myligand_ref_ori,
 	const double* genotype,
@@ -246,8 +236,6 @@ void perform_LS(double offspring_genotype [], const Liganddata* myligand_ref_ori
 	int cons_succ, cons_fail;		//consecutive successes and failures
 	int iteration_cnt;
 
-	Liganddata myligand_temp;
-
 
 	for (i=0; i<40; i++)
 	{
@@ -290,37 +278,19 @@ void perform_LS(double offspring_genotype [], const Liganddata* myligand_ref_ori
 
 		//evaluate the new genotype
 
-		myligand_temp = *myligand_ref_ori;
-		change_conform(&myligand_temp, entity_possible_new_genotype, debug);
-		entity_possible_new_genotype [39] = calc_interE(myginfo, &myligand_temp, grids, 0.00, debug);
-		scale_ligand(&myligand_temp, myginfo->spacing);
-		entity_possible_new_genotype [38] = calc_intraE(&myligand_temp, 8, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp, debug);
-		{
-			double helper_energies[2];
-			eval_intra_interE_for_genotype(
-				myligand_ref_ori,
-				entity_possible_new_genotype,
-				myginfo,
-				grids,
-				0.00,
-				8,
-				ignore_desolv,
-				scaled_AD4_coeff_elec,
-				AD4_coeff_desolv,
-				qasp,
-				debug,
-				helper_energies);
-			if (!double_bitwise_equal_or_both_nan(entity_possible_new_genotype[38], helper_energies[0]) ||
-				!double_bitwise_equal_or_both_nan(entity_possible_new_genotype[39], helper_energies[1]))
-			{
-				fprintf(stderr,
-					"WARNING: helper energy mismatch (perform_LS +dir): orig intra=%a inter=%a; helper intra=%a inter=%a\n",
-					entity_possible_new_genotype[38],
-					entity_possible_new_genotype[39],
-					helper_energies[0],
-					helper_energies[1]);
-			}
-		}
+		eval_intra_interE_for_genotype(
+			myligand_ref_ori,
+			entity_possible_new_genotype,
+			myginfo,
+			grids,
+			0.00,
+			8,
+			ignore_desolv,
+			scaled_AD4_coeff_elec,
+			AD4_coeff_desolv,
+			qasp,
+			debug,
+			&(entity_possible_new_genotype[38]));
 		(*evals_performed)++;
 
 		if (debug == 1)
@@ -387,37 +357,19 @@ void perform_LS(double offspring_genotype [], const Liganddata* myligand_ref_ori
 
 			//evaluating the genotype
 
-			myligand_temp = *myligand_ref_ori;
-			change_conform(&myligand_temp, entity_possible_new_genotype, debug);
-			entity_possible_new_genotype [39] = calc_interE(myginfo, &myligand_temp, grids, 0.00, debug);
-			scale_ligand(&myligand_temp, myginfo->spacing);
-			entity_possible_new_genotype [38] = calc_intraE(&myligand_temp, 8, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp, debug);
-			{
-				double helper_energies[2];
-				eval_intra_interE_for_genotype(
-					myligand_ref_ori,
-					entity_possible_new_genotype,
-					myginfo,
-					grids,
-					0.00,
-					8,
-					ignore_desolv,
-					scaled_AD4_coeff_elec,
-					AD4_coeff_desolv,
-					qasp,
-					debug,
-					helper_energies);
-				if (!double_bitwise_equal_or_both_nan(entity_possible_new_genotype[38], helper_energies[0]) ||
-					!double_bitwise_equal_or_both_nan(entity_possible_new_genotype[39], helper_energies[1]))
-				{
-					fprintf(stderr,
-						"WARNING: helper energy mismatch (perform_LS -dir): orig intra=%a inter=%a; helper intra=%a inter=%a\n",
-						entity_possible_new_genotype[38],
-						entity_possible_new_genotype[39],
-						helper_energies[0],
-						helper_energies[1]);
-				}
-			}
+			eval_intra_interE_for_genotype(
+				myligand_ref_ori,
+				entity_possible_new_genotype,
+				myginfo,
+				grids,
+				0.00,
+				8,
+				ignore_desolv,
+				scaled_AD4_coeff_elec,
+				AD4_coeff_desolv,
+				qasp,
+				debug,
+				&(entity_possible_new_genotype[38]));
 			(*evals_performed)++;
 
 			if (debug == 1)
@@ -769,38 +721,19 @@ void genetic_generational(double population [][40], const Liganddata* myligand_r
 
 		if (eval_cnt < pop_size)	//calculating energies of initial population
 		{
-			myligand_temp = *myligand_ref_ori;
-			change_conform(&myligand_temp, &(population [eval_cnt][0]), debug);
-			population [eval_cnt][39] = calc_interE(myginfo, &myligand_temp, grids, 0.00, debug);
-			scale_ligand(&myligand_temp, myginfo->spacing);
-			population [eval_cnt][38] = calc_intraE(&myligand_temp, 8, ignore_desolv, mypars->coeffs.scaled_AD4_coeff_elec, mypars->coeffs.AD4_coeff_desolv, mypars->qasp, debug);
-			{
-				double helper_energies[2];
-				eval_intra_interE_for_genotype(
-					myligand_ref_ori,
-					&(population[eval_cnt][0]),
-					myginfo,
-					grids,
-					0.00,
-					8,
-					ignore_desolv,
-					mypars->coeffs.scaled_AD4_coeff_elec,
-					mypars->coeffs.AD4_coeff_desolv,
-					mypars->qasp,
-					debug,
-					helper_energies);
-				if (!double_bitwise_equal_or_both_nan(population[eval_cnt][38], helper_energies[0]) ||
-					!double_bitwise_equal_or_both_nan(population[eval_cnt][39], helper_energies[1]))
-				{
-					fprintf(stderr,
-						"WARNING: helper energy mismatch (genetic_generational init eval %u): orig intra=%a inter=%a; helper intra=%a inter=%a\n",
-						eval_cnt,
-						population[eval_cnt][38],
-						population[eval_cnt][39],
-						helper_energies[0],
-						helper_energies[1]);
-				}
-			}
+			eval_intra_interE_for_genotype(
+				myligand_ref_ori,
+				&(population[eval_cnt][0]),
+				myginfo,
+				grids,
+				0.00,
+				8,
+				ignore_desolv,
+				mypars->coeffs.scaled_AD4_coeff_elec,
+				mypars->coeffs.AD4_coeff_desolv,
+				mypars->qasp,
+				debug,
+				&(population[eval_cnt][38]));
 			eval_cnt++;
 		}
 		else
@@ -841,16 +774,30 @@ void genetic_generational(double population [][40], const Liganddata* myligand_r
 								 offspring1_genotype, offspring2_genotype, debug);
 
 				//evaluating first offspring
-				myligand_temp = *myligand_ref_ori;
-				change_conform(&myligand_temp, offspring1_genotype, debug);
-				offspring1_genotype [39] = calc_interE(myginfo, &myligand_temp, grids, 0.00, debug);
-				scale_ligand(&myligand_temp, myginfo->spacing);
-				offspring1_genotype [38] = calc_intraE(&myligand_temp, 8, ignore_desolv, mypars->coeffs.scaled_AD4_coeff_elec, mypars->coeffs.AD4_coeff_desolv, mypars->qasp, debug);
+				eval_intra_interE_for_genotype(
+					myligand_ref_ori,
+					offspring1_genotype,
+					myginfo,
+					grids,
+					0.00,
+					8,
+					ignore_desolv,
+					mypars->coeffs.scaled_AD4_coeff_elec,
+					mypars->coeffs.AD4_coeff_desolv,
+					mypars->qasp,
+					debug,
+					&(offspring1_genotype[38]));
+				eval_cnt++;
+
+				//copying first offspring to population
+				memcpy(new_population [new_pop_cnt], offspring1_genotype, 40*sizeof(double));
+				new_pop_cnt++;
+
+				if (new_pop_cnt < pop_size)		//if there is still empty space in the population, evaluating second offspring
 				{
-					double helper_energies[2];
 					eval_intra_interE_for_genotype(
 						myligand_ref_ori,
-						offspring1_genotype,
+						offspring2_genotype,
 						myginfo,
 						grids,
 						0.00,
@@ -860,57 +807,7 @@ void genetic_generational(double population [][40], const Liganddata* myligand_r
 						mypars->coeffs.AD4_coeff_desolv,
 						mypars->qasp,
 						debug,
-						helper_energies);
-					if (!double_bitwise_equal_or_both_nan(offspring1_genotype[38], helper_energies[0]) ||
-						!double_bitwise_equal_or_both_nan(offspring1_genotype[39], helper_energies[1]))
-					{
-						fprintf(stderr,
-							"WARNING: helper energy mismatch (genetic_generational offspring1): orig intra=%a inter=%a; helper intra=%a inter=%a\n",
-							offspring1_genotype[38],
-							offspring1_genotype[39],
-							helper_energies[0],
-							helper_energies[1]);
-					}
-				}
-				eval_cnt++;
-
-				//copying first offspring to population
-				memcpy(new_population [new_pop_cnt], offspring1_genotype, 40*sizeof(double));
-				new_pop_cnt++;
-
-				if (new_pop_cnt < pop_size)		//if there is still empty space in the population, evaluating second offspring
-				{
-					myligand_temp = *myligand_ref_ori;
-					change_conform(&myligand_temp, offspring2_genotype, debug);
-					offspring2_genotype [39] = calc_interE(myginfo, &myligand_temp, grids, 0.00, debug);
-					scale_ligand(&myligand_temp, myginfo->spacing);
-					offspring2_genotype [38] = calc_intraE(&myligand_temp, 8, ignore_desolv, mypars->coeffs.scaled_AD4_coeff_elec, mypars->coeffs.AD4_coeff_desolv, mypars->qasp, debug);
-					{
-						double helper_energies[2];
-						eval_intra_interE_for_genotype(
-							myligand_ref_ori,
-							offspring2_genotype,
-							myginfo,
-							grids,
-							0.00,
-							8,
-							ignore_desolv,
-							mypars->coeffs.scaled_AD4_coeff_elec,
-							mypars->coeffs.AD4_coeff_desolv,
-							mypars->qasp,
-							debug,
-							helper_energies);
-						if (!double_bitwise_equal_or_both_nan(offspring2_genotype[38], helper_energies[0]) ||
-							!double_bitwise_equal_or_both_nan(offspring2_genotype[39], helper_energies[1]))
-						{
-							fprintf(stderr,
-								"WARNING: helper energy mismatch (genetic_generational offspring2): orig intra=%a inter=%a; helper intra=%a inter=%a\n",
-								offspring2_genotype[38],
-								offspring2_genotype[39],
-								helper_energies[0],
-								helper_energies[1]);
-						}
-					}
+						&(offspring2_genotype[38]));
 					eval_cnt++;
 
 					//copying second offspring to population
