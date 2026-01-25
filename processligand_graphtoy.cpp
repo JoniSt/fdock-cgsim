@@ -158,7 +158,7 @@ COMPUTE_KERNEL(hls, kernel_IntraE_GenAtomPairIndices,
 COMPUTE_KERNEL(hls, kernel_IntraE_FetchAtomData,
     KernelReadPort<uint32_t, s_iop_rtp> num_atoms_in,
     KernelReadPort<AtomIndexPair> atom_pair_in,
-    KernelMemoryPort<const double> atom_idxyzq_buf,
+    KernelReadPort<double> atom_idxyzq_in,
     KernelWritePort<IntraE_AtomPair> atom_data_out
 ) {
     double atom_idxyzq[g_maxNumAtoms][5];
@@ -167,10 +167,10 @@ COMPUTE_KERNEL(hls, kernel_IntraE_FetchAtomData,
     uint32_t num_atoms = co_await num_atoms_in.get();
     num_atoms = std::min(num_atoms, uint32_t(g_maxNumAtoms));
 
-    // Copy the entire atom_idxyzq array into local memory
+    // Read the entire atom_idxyzq stream into local memory (cache)
     for (uint32_t idx_atom = 0; idx_atom < num_atoms; ++idx_atom) {
         for (size_t i = 0; i < 5; ++i) {
-            atom_idxyzq[idx_atom][i] = atom_idxyzq_buf[idx_atom * 5 + i];
+            atom_idxyzq[idx_atom][i] = co_await atom_idxyzq_in.get();
         }
     }
 
@@ -190,6 +190,28 @@ COMPUTE_KERNEL(hls, kernel_IntraE_FetchAtomData,
 
     // Terminate pipeline
     co_await atom_data_out.put(IntraE_AtomPair{.m_terminate_processing = true});
+}
+
+/**
+ * Reads atom_idxyzq from memory sequentially and streams it out as doubles.
+ * Output order: atom0[0..4], atom1[0..4], ...
+ */
+COMPUTE_KERNEL(hls, kernel_StreamAtomIdxyzq,
+    KernelReadPort<uint32_t, s_iop_rtp> num_atoms_in,
+    KernelMemoryPort<const double> atom_idxyzq_buf,
+    KernelWritePort<double> atom_idxyzq_out
+) {
+    uint32_t num_atoms = co_await num_atoms_in.get();
+
+    num_atoms = std::min(num_atoms, uint32_t(g_maxNumAtoms));
+
+    for (uint32_t idx_atom = 0; idx_atom < num_atoms; ++idx_atom) {
+#pragma HLS unroll off
+        for (uint32_t i = 0; i < 5; ++i) {
+#pragma HLS unroll off
+            co_await atom_idxyzq_out.put(atom_idxyzq_buf[idx_atom * 5 + i]);
+        }
+    }
 }
 
 static std::vector<char> intraE_build_hbond_lut(const Liganddata* myligand) {
@@ -440,6 +462,7 @@ COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
     IoConnector<double> out_buf
 ) {
     IoConnector<AtomIndexPair> atom_pairs;
+    IoConnector<double> atom_idxyzq_stream;
     IoConnector<IntraE_AtomPair>
         atom_data_fetched,
         atom_data_distance_checked,
@@ -464,7 +487,8 @@ COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
     CGSIM_AUTO_NAME(out_buf);
 
     kernel_IntraE_GenAtomPairIndices(num_atoms_in, intraE_contributors_buf, atom_pairs);
-    kernel_IntraE_FetchAtomData(num_atoms_in, atom_pairs, atom_idxyzq_buf, atom_data_fetched);
+    kernel_StreamAtomIdxyzq(num_atoms_in, atom_idxyzq_buf, atom_idxyzq_stream);
+    kernel_IntraE_FetchAtomData(num_atoms_in, atom_pairs, atom_idxyzq_stream, atom_data_fetched);
     kernel_IntraE_SetDistanceID_CheckHBond(atom_data_fetched, atom_data_distance_checked, dcutoff_in, is_hbond_lut_buf);
     kernel_IntraE_Volume_Solpar(atom_data_distance_checked, atom_data_with_volume, qasp_in, volume_buf, solpar_buf);
     kernel_IntraE_FetchVWpars(atom_data_with_volume, atom_data_with_vw_fetched, vwpars_a_buf, vwpars_b_buf, vwpars_c_buf, vwpars_d_buf);
@@ -694,7 +718,7 @@ COMPUTE_KERNEL(hls, kernel_interE_BuildAtomData,
     KernelReadPort<int, s_iop_rtp> grid_size_x_in,
     KernelReadPort<int, s_iop_rtp> grid_size_y_in,
     KernelReadPort<int, s_iop_rtp> grid_size_z_in,
-    KernelMemoryPort<const double> atom_idxyzq_buf,
+    KernelReadPort<double> atom_idxyzq_in,
     KernelWritePort<InterE_AtomData> atom_data_out
 ) {
 #pragma HLS allocation operation instances=dmul limit=3
@@ -714,7 +738,7 @@ COMPUTE_KERNEL(hls, kernel_interE_BuildAtomData,
 
         double inputData[5];
         for (size_t j = 0; j < 5; ++j) {
-            inputData[j] = atom_idxyzq_buf[i * 5 + j];
+            inputData[j] = co_await atom_idxyzq_in.get();
         }
 
         outputData.m_type_id = int(inputData[0]);
@@ -748,6 +772,11 @@ COMPUTE_KERNEL(hls, kernel_interE_BuildAtomData,
     // Terminate pipeline
     co_await atom_data_out.put(InterE_AtomData{.m_terminate_processing = true});
 }
+
+/**
+ * Reads atom_idxyzq from memory sequentially and streams it out as doubles.
+ * Output order: atom0[0..4], atom1[0..4], ...
+ */
 
 static constexpr uint32_t s_terminate_dram_reader_sentinel = UINT32_MAX;
 
@@ -970,6 +999,7 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
     IoConnector<double> peratom_elec_buf,
     IoConnector<double> scalar_out_buf
 ) {
+    IoConnector<double> atom_idxyzq_stream;
     IoConnector<InterE_AtomData> atom_data_stream;
     IoConnector<uint32_t> dram_address_stream;
     IoConnector<double> dram_data_stream;
@@ -988,13 +1018,19 @@ COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
     CGSIM_AUTO_NAME(peratom_elec_buf);
     CGSIM_AUTO_NAME(scalar_out_buf);
 
+    kernel_StreamAtomIdxyzq(
+        num_atoms_in,
+        atom_idxyzq_buf,
+        atom_idxyzq_stream
+    );
+
     kernel_interE_BuildAtomData(
         num_atoms_in,
         outofgrid_tolerance_in,
         grid_size_x_in,
         grid_size_y_in,
         grid_size_z_in,
-        atom_idxyzq_buf,
+        atom_idxyzq_stream,
         atom_data_stream
     );
 
