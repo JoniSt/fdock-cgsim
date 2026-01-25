@@ -96,8 +96,6 @@ void get_seeds_and_initpop(Dockpars*, double [][40], const Liganddata*, const Gr
 
 void get_ref_orientation(Liganddata*, const Dockpars*);
 
-void enable_graphdumps();
-
 #ifdef __cplusplus
 }
 #endif

@@ -11,11 +11,10 @@ GRID_FILE="$ROOT_DIR/input_data/1hvr_vegl.maps.fld"
 LIGAND_FILE="$ROOT_DIR/input_data/1hvrl.pdbqt"
 NEV=2500
 NRUN=1
-GRAPHDUMPS=0
 
 if [[ ! -x "$BIN" ]]; then
   echo "Error: $BIN not found or not executable. Build first (see README)." >&2
   exit 1
 fi
 
-exec "$BIN" -ffile "$GRID_FILE" -lfile "$LIGAND_FILE" -nev "$NEV" -nrun "$NRUN" -graphdumps "$GRAPHDUMPS"
+exec "$BIN" -ffile "$GRID_FILE" -lfile "$LIGAND_FILE" -nev "$NEV" -nrun "$NRUN"

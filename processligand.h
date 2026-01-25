@@ -119,7 +119,6 @@ void move_ligand(Liganddata*, const double []);
 void scale_ligand(Liganddata*, const double);
 
 void change_conform         (Liganddata*, const double [], int);
-void change_conform_original(Liganddata*, const double [], int);
 
 double calc_rmsd(const Liganddata*, const Liganddata*, const int);
 
@@ -130,13 +129,10 @@ void calc_distdep_tables(double [], double [], double [], double [], double [], 
 void calc_q_tables(const Liganddata*, double [][256], double [], const double);
 
 double calc_intraE         (const Liganddata*, double, char, const double, const double, const double, int);
-double calc_intraE_original(const Liganddata*, double, char, const double, const double, const double, int);
 
 double calc_interE         (const Gridinfo*, const Liganddata*, const double*, double, int);
-double calc_interE_original(const Gridinfo*, const Liganddata*, const double*, double, int);
 
 void calc_interE_peratom         (const Gridinfo*, const Liganddata*, const double*, double, double*, double [256], double [256], int);
-void calc_interE_peratom_original(const Gridinfo*, const Liganddata*, const double*, double, double*, double [256], double [256], int);
 
 void print_ref_lig_energies(Liganddata, Gridinfo, const double*, const double, const double, const double);
 

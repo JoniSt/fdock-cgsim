@@ -77,7 +77,6 @@ static constexpr auto g_maxNumAtoms = 256;
 static constexpr auto g_maxNumAtomTypes = 14;
 static constexpr auto g_numDistanceIDs = 2048;
 static constexpr auto g_outOfGridPenalty = 1 << 24;
-static constexpr auto g_peratomOutOfGridPenalty = 100000;
 static constexpr auto g_maxNumRotbonds = 32;
 
 // The AIE's AXI4 FIFOs have a depth of four 32-bit values (16 bytes total).
@@ -86,15 +85,6 @@ static constexpr size_t g_aieAxiFifoDepthBytes = 16;
 // FIFO depth that better emulates the AI Engines.
 template<typename T>
 static constexpr size_t g_fifoDepthFor = std::max(size_t(1), g_aieAxiFifoDepthBytes / sizeof(T));
-
-
-static bool g_graphdumpsEnabled = false;
-static const std::string g_dumpDirectory = "dumps";
-
-// Acceptable mismatch between original algorithm and HW implementation
-static constexpr double s_intraE_tolerance_rel = 1e-10;
-static constexpr double s_interE_tolerance_rel = 1e-10;
-static constexpr double s_changeConform_tolerance_rel = 1e-10;
 
 //using AtomIndexPair = std::pair<uint8_t, uint8_t>;
 
@@ -500,26 +490,6 @@ COMPUTE_KERNEL(hls, kernel_ScaleLigandAtomIdxyzq,
     }
 }
 
-static void dumpStructRaw(const char *fileName, const char *data, size_t size) {
-    std::ofstream stream{fileName, std::ios_base::out | std::ios_base::trunc | std::ios_base::binary};
-    if (!stream.good()) return;
-
-    stream.write(data, size);
-}
-
-static void dumpLigand(const char *fileName, const Liganddata *ligand) {
-    dumpStructRaw(fileName, (const char *)ligand, sizeof(*ligand));
-}
-
-static void dumpJson(const char *fileName, const nlohmann::json& json) {
-    std::string s = json.dump(4);
-    dumpStructRaw(fileName, s.data(), s.size());
-}
-
-double calc_intraE(const Liganddata* myligand, double dcutoff, char ignore_desolv, const double scaled_AD4_coeff_elec, const double AD4_coeff_desolv, const double qasp, int debug) {
-    return calc_intraE_original(myligand, dcutoff, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp, debug);
-}
-
 
 using InterE_RawAtomInput = double[5];
 
@@ -815,19 +785,12 @@ COMPUTE_KERNEL_TEMPLATE(hls, kernel_InterE_ReadGrid,
 
 COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
     KernelReadPort<InterE_AtomEnergy> atom_energy_in,
-    KernelReadPort<bool, s_iop_rtp> enable_peratom_outputs_in,
-    KernelMemoryPort<double> vdw_buf,
-    KernelMemoryPort<double> elec_buf,
     KernelMemoryPort<double> scalar_out_buf
 ) {
 #pragma HLS allocation operation instances=dadd limit=2
 
-    const bool enable_peratom_outputs = co_await enable_peratom_outputs_in.get();
-
     double interE = 0;
     double elecE  = 0;
-
-    uint32_t peratom_index = 0;
 
     while (true) {
         const auto data = co_await atom_energy_in.get();
@@ -847,14 +810,6 @@ COMPUTE_KERNEL(hls, kernel_interE_AccumulateResults,
 
         if (data.m_isOutOfGrid) {
             interE += g_outOfGridPenalty;
-            elec = vdW = g_peratomOutOfGridPenalty;
-        }
-
-        if (enable_peratom_outputs) {
-            //BOOST_ASSERT(peratom_index < g_maxNumAtoms);
-            vdw_buf[peratom_index] = vdW;
-            elec_buf[peratom_index] = elec;
-            peratom_index++;
         }
     }
 
@@ -872,11 +827,8 @@ static constexpr void build_interE_core(
     IoConnector<int> grid_size_y_in,
     IoConnector<int> grid_size_z_in,
     IoConnector<int> num_of_atypes_in,
-    IoConnector<bool> enable_peratom_outputs_in,
     IoConnector<double> atom_idxyzq_stream,
     IoConnector<const double> grid_buf,
-    IoConnector<double> peratom_vdw_buf,
-    IoConnector<double> peratom_elec_buf,
     IoConnector<double> scalar_out_buf
 ) {
     IoConnector<InterE_AtomData> atom_data_stream;
@@ -917,9 +869,6 @@ static constexpr void build_interE_core(
 
     kernel_interE_AccumulateResults(
         atom_energy_stream,
-        enable_peratom_outputs_in,
-        peratom_vdw_buf,
-        peratom_elec_buf,
         scalar_out_buf
     );
 }
@@ -928,17 +877,6 @@ static auto getNumGridElems(const Gridinfo *mygrid) {
     const auto& gridsize = mygrid->size_xyz;
     return (mygrid->num_of_atypes + 2) * gridsize[0] * gridsize[1] * gridsize[2];
 }
-
-double calc_interE(const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance, int debug) {
-    return calc_interE_original(mygrid, myligand, fgrids, outofgrid_tolerance, debug);
-}
-
-void calc_interE_peratom(const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance,
-                         double* elecE, double peratom_vdw [256], double peratom_elec [256], int debug)
-{
-    calc_interE_peratom_original(mygrid, myligand, fgrids, outofgrid_tolerance, elecE, peratom_vdw, peratom_elec, debug);
-}
-
 
 struct ChangeConform_AtomData {
     InterE_AtomInput m_atomdata;
@@ -1220,10 +1158,7 @@ COMPUTE_GRAPH constexpr auto intra_interE_uber_graph = make_compute_graph_v<[] (
     IoConnector<int> grid_size_y_in,
     IoConnector<int> grid_size_z_in,
     IoConnector<int> num_of_atypes_in,
-    IoConnector<bool> enable_peratom_outputs_in,
     IoConnector<const double> grid_buf,
-    IoConnector<double> peratom_vdw_buf,
-    IoConnector<double> peratom_elec_buf,
     IoConnector<double> interE_scalar_out_buf,
 
     // IntraE inputs
@@ -1260,10 +1195,7 @@ COMPUTE_GRAPH constexpr auto intra_interE_uber_graph = make_compute_graph_v<[] (
     CGSIM_AUTO_NAME(grid_size_y_in);
     CGSIM_AUTO_NAME(grid_size_z_in);
     CGSIM_AUTO_NAME(num_of_atypes_in);
-    CGSIM_AUTO_NAME(enable_peratom_outputs_in);
     CGSIM_AUTO_NAME(grid_buf);
-    CGSIM_AUTO_NAME(peratom_vdw_buf);
-    CGSIM_AUTO_NAME(peratom_elec_buf);
     CGSIM_AUTO_NAME(interE_scalar_out_buf);
 
     CGSIM_AUTO_NAME(scale_factor_in);
@@ -1309,11 +1241,8 @@ COMPUTE_GRAPH constexpr auto intra_interE_uber_graph = make_compute_graph_v<[] (
         grid_size_y_in,
         grid_size_z_in,
         num_of_atypes_in,
-        enable_peratom_outputs_in,
         atom_idxyzq_stream,
         grid_buf,
-        peratom_vdw_buf,
-        peratom_elec_buf,
         interE_scalar_out_buf
     );
 
@@ -1357,9 +1286,6 @@ extern "C" void eval_intra_interE_for_genotype_graphtoy(
     // Build required derived buffers
     auto is_hbond_lut_buf = intraE_build_hbond_lut(myligand_ref_ori);
 
-    // InterE outputs (per-atom disabled here)
-    std::vector<double> peratom_vdw_buf{1, 0.0};
-    std::vector<double> peratom_elec_buf{1, 0.0};
     std::vector<double> interE_out_buf(2, 0.0); // interE, elecE
 
     // IntraE outputs
@@ -1412,10 +1338,7 @@ extern "C" void eval_intra_interE_for_genotype_graphtoy(
         ScalarDataSource<int>(myginfo->size_xyz[1]),
         ScalarDataSource<int>(myginfo->size_xyz[2]),
         ScalarDataSource<int>(myligand_ref_ori->num_of_atypes),
-        ScalarDataSource<bool>(false),
         RuntimeMemoryBuffer(gridMemoryRegion),
-        memBuffer(peratom_vdw_buf),
-        memBuffer(peratom_elec_buf),
         memBuffer(interE_out_buf),
 
         ScalarDataSource<double>(myginfo->spacing),
@@ -1446,10 +1369,4 @@ extern "C" void eval_intra_interE_for_genotype_graphtoy(
 #endif
 }
 
-void change_conform(Liganddata* myligand, const double genotype [], int debug) {
-    change_conform_original(myligand, genotype, debug);
-}
 
-extern "C" void enable_graphdumps() {
-    g_graphdumpsEnabled = true;
-}

@@ -939,7 +939,7 @@ void scale_ligand(Liganddata* myligand, const double scale_factor)
 			myligand->atom_idxyzq [i][j] = myligand->atom_idxyzq [i][j]*scale_factor;
 }
 
-void change_conform_original(Liganddata* myligand, const double genotype [], int debug)
+void change_conform(Liganddata* myligand, const double genotype [], int debug)
 //The function changes the conformation of myligand according to the genotype given
 //by the second parameter.
 {
@@ -1098,7 +1098,7 @@ void calc_q_tables(const Liganddata* myligand, double q1q2 [][256], double qasp_
 
 }
 
-double calc_intraE_original(const Liganddata* myligand, double dcutoff, char ignore_desolv, const double scaled_AD4_coeff_elec, const double AD4_coeff_desolv, const double qasp, int debug)
+double calc_intraE(const Liganddata* myligand, double dcutoff, char ignore_desolv, const double scaled_AD4_coeff_elec, const double AD4_coeff_desolv, const double qasp, int debug)
 //The function calculates the intramolecular energy of the ligand given by the first parameter,
 //and returns it as a double. The second parameter is the distance cutoff, if the third isn't 0,
 //desolvation energy won't be included by the energy value, the fourth indicates if messages
@@ -1217,7 +1217,7 @@ double calc_intraE_original(const Liganddata* myligand, double dcutoff, char ign
 		return (vW + el);
 }
 
-double calc_interE_original(const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance, int debug)
+double calc_interE(const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance, int debug)
 //The function calculates the intermolecular energy of a ligand given by myligand parameter,
 //and a receptor represented as a grid. The grid point values must be stored at the location
 //which starts at fgrids, the memory content can be generated with get_gridvalues funciton.
@@ -1422,7 +1422,7 @@ double calc_interE_original(const Gridinfo* mygrid, const Liganddata* myligand, 
 	return interE;
 }
 
-void calc_interE_peratom_original(	const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance,
+void calc_interE_peratom(	const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance,
 									double* elecE, double peratom_vdw [256], double peratom_elec [256], int debug)
 //
 {

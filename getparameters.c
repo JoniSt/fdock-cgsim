@@ -137,7 +137,7 @@ void get_commandpars(const int* argc, char** argv, double* spacing, Dockpars* my
 
 
 	//default values
-	tempdb = log(6.0/(*spacing))/log(2.0)+10;	//calculating default dmov_mask (for 6 Angström)
+	tempdb = log(6.0/(*spacing))/log(2.0)+10;	//calculating default dmov_mask (for 6 Angstrï¿½m)
 	tempint = (int) floor(tempdb+0.5);
 	if (tempint < 1)
 		tempint = 1;
@@ -145,7 +145,7 @@ void get_commandpars(const int* argc, char** argv, double* spacing, Dockpars* my
 		tempint = 16;
 	mypars->dmov_mask = (unsigned long) floor(pow(2,tempint)-1);
 
-	mypars->dang_mask = 0xFFFF; //+/- 90°
+	mypars->dang_mask = 0xFFFF; //+/- 90ï¿½
 	mypars->initpop_gen_or_loadfile = 0;
 	mypars->mutation_rate = 0x5; //2%
 	mypars->crossover_rate = 0xCC;	//80%
@@ -157,7 +157,7 @@ void get_commandpars(const int* argc, char** argv, double* spacing, Dockpars* my
 	mypars->lsearch_rate = 0.06;	//6%
 	mypars->rho_lower_bound = 0xA;	//0.01
 	mypars->base_dmov_mul_sqrt3 = (unsigned long) float2fracint(2.0/(*spacing)*sqrt(3), 10);	//2 A
-	mypars->base_dang_mul_sqrt3 = (unsigned long) float2fracint(75.0/180*512*sqrt(3), 8);		//75°
+	mypars->base_dang_mul_sqrt3 = (unsigned long) float2fracint(75.0/180*512*sqrt(3), 8);		//75ï¿½
 	mypars->cons_limit = 3;	//4
 	mypars->max_num_of_iters = 300;
 	mypars->pop_size = 150 - 1;
@@ -168,7 +168,7 @@ void get_commandpars(const int* argc, char** argv, double* spacing, Dockpars* my
 	mypars->gen_best = 0;
 	strcpy(mypars->resname, "docking");
 	mypars->qasp = 0.01097;		//original AutoDock QASP parameter
-	mypars->rmsd_tolerance = 2.0;	//2 Angström
+	mypars->rmsd_tolerance = 2.0;	//2 Angstrï¿½m
 
 
 	//overwriting values which were defined as a command line argument
@@ -247,7 +247,7 @@ void get_commandpars(const int* argc, char** argv, double* spacing, Dockpars* my
 		}
 
 		//Argument: maximal delta movement during mutation. Must be a double greater than 0.
-		//Will be rounded to the nearest value of the following set: 2^(N-10)*grid spacing angström, N=1..16.
+		//Will be rounded to the nearest value of the following set: 2^(N-10)*grid spacing angstrï¿½m, N=1..16.
 		if (strcmp("-dmov", argv [i]) == 0)
 		{
 			arg_recognized = 1;
@@ -366,7 +366,7 @@ void get_commandpars(const int* argc, char** argv, double* spacing, Dockpars* my
 				printf("Warning: value of -lsmov argument ignored. Value must be a double between 0 and %lf.\n", 64*(*spacing));
 		}
 
-		//Argument: local search delta angle. Must be a float between 0 and 103°.
+		//Argument: local search delta angle. Must be a float between 0 and 103ï¿½.
 		//Means the spread of unifily distributed delta angle of local search.
 		if (strcmp("-lsang", argv [i]) == 0)
 		{
@@ -521,14 +521,6 @@ void get_commandpars(const int* argc, char** argv, double* spacing, Dockpars* my
 		if (strcmp("-lfile", argv [i]) == 0)
 			arg_recognized = 1;
 		
-		if (strcmp("-graphdumps", argv[i]) == 0) {
-			arg_recognized = 1;
-			sscanf(argv [i+1], "%ld", &tempint);
-
-			if (tempint)
-				enable_graphdumps();
-		}
-
 		if (arg_recognized != 1)
 			printf("Warning: unknown argument '%s'.\n", argv [i]);
 
