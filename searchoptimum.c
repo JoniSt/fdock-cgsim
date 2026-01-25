@@ -22,7 +22,6 @@ void eval_intra_interE_for_genotype_graphtoy(
 	double scaled_AD4_coeff_elec,
 	double AD4_coeff_desolv,
 	double qasp,
-	int debug,
 	double* out_intra_inter /* out[0]=intraE, out[1]=interE */
 );
 
@@ -60,7 +59,6 @@ static void eval_intra_interE_for_genotype(
 		scaled_AD4_coeff_elec,
 		AD4_coeff_desolv,
 		qasp,
-		debug,
 		graph_out
 	);
 
@@ -723,7 +721,6 @@ void genetic_generational(double population [][40], const Liganddata* myligand_r
 
 	double avg_energy;
 	int num_of_evals_for_ls;
-	int evals_for_ls_in_this_cycle;
 
 	unsigned int num_of_entity_for_ls;
 
@@ -877,7 +874,6 @@ void genetic_generational(double population [][40], const Liganddata* myligand_r
 						population[best_entity_id][38] + population[best_entity_id][39]);
 		}
 
-			evals_for_ls_in_this_cycle = 0;
 			for (i=0; i<num_of_entity_for_ls; i++)	//subjecting num_of_entity_for_ls pieces of offsprings to LS
 			{
 
@@ -896,8 +892,6 @@ void genetic_generational(double population [][40], const Liganddata* myligand_r
 						   mypars->cons_limit+1, mypars->cons_limit+1, &LS_eval, myginfo, grids, ignore_desolv, mypars->coeffs.scaled_AD4_coeff_elec,
 						   mypars->coeffs.AD4_coeff_desolv, mypars->qasp, debug);
 				eval_cnt += LS_eval;
-
-				evals_for_ls_in_this_cycle += LS_eval;
 
 				if (debug == 1)
 				{

@@ -1278,11 +1278,8 @@ extern "C" void eval_intra_interE_for_genotype_graphtoy(
     double scaled_AD4_coeff_elec,
     double AD4_coeff_desolv,
     double qasp,
-    int debug,
     double* out_intra_inter /* out[0]=intraE, out[1]=interE */
 ) {
-    (void)debug;
-
     // Build required derived buffers
     auto is_hbond_lut_buf = intraE_build_hbond_lut(myligand_ref_ori);
 
