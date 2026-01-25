@@ -1217,7 +1217,7 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
     KernelReadPort<double> genotype_sincos_in,
     KernelMemoryPort<const double> rotbonds_moving_vectors_buf,
     KernelMemoryPort<const double> rotbonds_unit_vectors_buf,
-    KernelMemoryPort<double> output_buf
+    KernelWritePort<ChangeConform_AtomData> atom_data_out
 ) {
 #pragma HLS allocation operation instances=dmul limit=2
 //#pragma HLS allocation function instances=rotate_precomputed_sincos limit=1
@@ -1269,12 +1269,12 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
         }
     }
 
-    uint32_t atom_idx = 0;
-
     while (true) {
         auto data = co_await atom_data_in.get();
 
-        if (data.m_terminate_processing) break;
+        if (data.m_terminate_processing) {
+            break;
+        }
 
         double *atom_xyz = &data.m_atomdata.m_atom_idxyzq[1];
 
@@ -1299,9 +1299,29 @@ COMPUTE_KERNEL(hls, kernel_ChangeConform_Rotate,
         // Apply global move
         vec3_accum(atom_xyz, globalmove_xyz);
 
-        // Write output
-        for (uint32_t i = 0; i < 5; ++i) {
-            output_buf[atom_idx * 5 + i] = data.m_atomdata.m_atom_idxyzq[i];
+        co_await atom_data_out.put(data);
+    }
+
+    // Terminate pipeline
+    co_await atom_data_out.put(ChangeConform_AtomData{.m_terminate_processing = true});
+}
+
+COMPUTE_KERNEL(hls, kernel_ChangeConform_WriteAtomsToMemory,
+    KernelReadPort<ChangeConform_AtomData> atom_data_in,
+    KernelMemoryPort<double> output_buf
+) {
+    uint32_t atom_idx = 0;
+
+    while (true) {
+        const auto data = co_await atom_data_in.get();
+        if (data.m_terminate_processing) {
+            break;
+        }
+
+        if (atom_idx < g_maxNumAtoms) {
+            for (uint32_t i = 0; i < 5; ++i) {
+                output_buf[atom_idx * 5 + i] = data.m_atomdata.m_atom_idxyzq[i];
+            }
         }
 
         atom_idx++;
@@ -1409,6 +1429,7 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
     IoConnector<double> output_buf
 ) {
     IoConnector<ChangeConform_AtomData> atoms_read;
+    IoConnector<ChangeConform_AtomData> atoms_rotated;
     IoConnector<double> genotype_sincos_precomputed;
 
     CGSIM_AUTO_NAME(num_atoms_in);
@@ -1446,6 +1467,11 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
         genotype_sincos_precomputed,
         rotbonds_moving_vectors_buf,
         rotbonds_unit_vectors_buf,
+        atoms_rotated
+    );
+
+    kernel_ChangeConform_WriteAtomsToMemory(
+        atoms_rotated,
         output_buf
     );
 
