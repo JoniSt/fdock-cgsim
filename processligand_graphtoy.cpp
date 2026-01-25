@@ -478,158 +478,26 @@ static constexpr void build_intraE_core(
     kernel_IntraE_Compute_VW_EL_Desolv(atom_data_with_vw_scaled, scaled_AD4_coeff_elec_in, AD4_coeff_desolv_in, out_buf);
 }
 
-COMPUTE_GRAPH constexpr auto intraE_graph = make_compute_graph_v<[] (
-    IoConnector<uint32_t> num_atoms_in,
-    IoConnector<const char> intraE_contributors_buf,
-    IoConnector<const double> atom_idxyzq_buf,
-    IoConnector<const char> is_hbond_lut_buf,
-    IoConnector<const double> volume_buf,
-    IoConnector<const double> solpar_buf,
-    IoConnector<const double> vwpars_a_buf,
-    IoConnector<const double> vwpars_b_buf,
-    IoConnector<const double> vwpars_c_buf,
-    IoConnector<const double> vwpars_d_buf,
-    IoConnector<double> dcutoff_in,
-    IoConnector<double> qasp_in,
-    IoConnector<double> scaled_AD4_coeff_elec_in,
-    IoConnector<double> AD4_coeff_desolv_in,
-    IoConnector<double> out_buf
+COMPUTE_KERNEL(hls, kernel_ScaleLigandAtomIdxyzq,
+    KernelReadPort<uint32_t, s_iop_rtp> num_atoms_in,
+    KernelReadPort<double, s_iop_rtp> scale_factor_in,
+    KernelReadPort<double> atom_idxyzq_in,
+    KernelWritePort<double> atom_idxyzq_out
 ) {
-    IoConnector<double> atom_idxyzq_stream;
+    const uint32_t num_atoms = co_await num_atoms_in.get();
+    const double scale_factor = co_await scale_factor_in.get();
 
-    CGSIM_AUTO_NAME(num_atoms_in);
-    CGSIM_AUTO_NAME(intraE_contributors_buf);
-    CGSIM_AUTO_NAME(atom_idxyzq_buf);
-    CGSIM_AUTO_NAME(is_hbond_lut_buf);
-    CGSIM_AUTO_NAME(volume_buf);
-    CGSIM_AUTO_NAME(solpar_buf);
-    CGSIM_AUTO_NAME(vwpars_a_buf);
-    CGSIM_AUTO_NAME(vwpars_b_buf);
-    CGSIM_AUTO_NAME(vwpars_c_buf);
-    CGSIM_AUTO_NAME(vwpars_d_buf);
-    CGSIM_AUTO_NAME(dcutoff_in);
-    CGSIM_AUTO_NAME(qasp_in);
-    CGSIM_AUTO_NAME(scaled_AD4_coeff_elec_in);
-    CGSIM_AUTO_NAME(AD4_coeff_desolv_in);
-    CGSIM_AUTO_NAME(out_buf);
-
-    kernel_StreamAtomIdxyzq(num_atoms_in, atom_idxyzq_buf, atom_idxyzq_stream);
-
-    build_intraE_core(
-        num_atoms_in,
-        intraE_contributors_buf,
-        atom_idxyzq_stream,
-        is_hbond_lut_buf,
-        volume_buf,
-        solpar_buf,
-        vwpars_a_buf,
-        vwpars_b_buf,
-        vwpars_c_buf,
-        vwpars_d_buf,
-        dcutoff_in,
-        qasp_in,
-        scaled_AD4_coeff_elec_in,
-        AD4_coeff_desolv_in,
-        out_buf
-    );
-
-    return std::tuple();
-}>;
-
-
-double calc_intraE_graphtoy(const Liganddata* myligand, double dcutoff, char ignore_desolv, const double scaled_AD4_coeff_elec, const double AD4_coeff_desolv, const double qasp) {
-    // Copy all 2D arrays into local (flat) buffers
-    static_assert(sizeof(myligand->intraE_contributors) == (g_maxNumAtoms * g_maxNumAtoms));
-    std::vector<char> intraE_contributors_buf(g_maxNumAtoms * g_maxNumAtoms);
-    std::memcpy(intraE_contributors_buf.data(), myligand->intraE_contributors, sizeof(myligand->intraE_contributors));
-
-    static_assert(sizeof(myligand->atom_idxyzq) == (g_maxNumAtoms * 5 * sizeof(double)));
-    std::vector<double> atom_idxyzq_buf(g_maxNumAtoms * 5);
-    std::memcpy(atom_idxyzq_buf.data(), myligand->atom_idxyzq, sizeof(myligand->atom_idxyzq));
-
-    static_assert(sizeof(myligand->VWpars_A) == (g_maxNumAtomTypes * g_maxNumAtomTypes * sizeof(double)));
-    std::vector<double> vwpars_a_buf(g_maxNumAtomTypes * g_maxNumAtomTypes);
-    std::memcpy(vwpars_a_buf.data(), myligand->VWpars_A, sizeof(myligand->VWpars_A));
-
-    static_assert(sizeof(myligand->VWpars_B) == (g_maxNumAtomTypes * g_maxNumAtomTypes * sizeof(double)));
-    std::vector<double> vwpars_b_buf(g_maxNumAtomTypes * g_maxNumAtomTypes);
-    std::memcpy(vwpars_b_buf.data(), myligand->VWpars_B, sizeof(myligand->VWpars_B));
-
-    static_assert(sizeof(myligand->VWpars_C) == (g_maxNumAtomTypes * g_maxNumAtomTypes * sizeof(double)));
-    std::vector<double> vwpars_c_buf(g_maxNumAtomTypes * g_maxNumAtomTypes);
-    std::memcpy(vwpars_c_buf.data(), myligand->VWpars_C, sizeof(myligand->VWpars_C));
-
-    static_assert(sizeof(myligand->VWpars_D) == (g_maxNumAtomTypes * g_maxNumAtomTypes * sizeof(double)));
-    std::vector<double> vwpars_d_buf(g_maxNumAtomTypes * g_maxNumAtomTypes);
-    std::memcpy(vwpars_d_buf.data(), myligand->VWpars_D, sizeof(myligand->VWpars_D));
-
-    // HBond LUT
-    auto is_hbond_lut_buf = intraE_build_hbond_lut(myligand);
-
-    std::vector<double> out_buf(3, 0.0); // vW, el, desolv
-    double& vW = out_buf[0];
-    double& el = out_buf[1];
-    double& desolv = out_buf[2];
-
-#ifdef HAVE_TAPASCO
-    auto& tpc = get_tapasco();
-    const auto peid = get_tapasco_pe(s_tpc_vlnv_intraE);
-
-    auto intraE_contributors_tpc = tapasco_inbuf<char>(intraE_contributors_buf);
-    auto atom_idxyzq_tpc = tapasco_inbuf<double>(atom_idxyzq_buf);
-    auto is_hbond_lut_tpc = tapasco_inbuf<char>(is_hbond_lut_buf);
-    auto volume_tpc = tapasco_inbuf<double>(std::span<const double>(myligand->volume, g_maxNumAtomTypes));
-    auto solpar_tpc = tapasco_inbuf<double>(std::span<const double>(myligand->solpar, g_maxNumAtomTypes));
-    auto vwpars_a_tpc = tapasco_inbuf<double>(vwpars_a_buf);
-    auto vwpars_b_tpc = tapasco_inbuf<double>(vwpars_b_buf);
-    auto vwpars_c_tpc = tapasco_inbuf<double>(vwpars_c_buf);
-    auto vwpars_d_tpc = tapasco_inbuf<double>(vwpars_d_buf);
-    auto out_tpc = tapasco_outbuf<double>(out_buf);
-
-    auto job = tpc.launch(peid,
-        myligand->num_of_atoms,
-        intraE_contributors_tpc,
-        atom_idxyzq_tpc,
-        is_hbond_lut_tpc,
-        volume_tpc,
-        solpar_tpc,
-        vwpars_a_tpc,
-        vwpars_b_tpc,
-        vwpars_c_tpc,
-        vwpars_d_tpc,
-        dcutoff,
-        qasp,
-        scaled_AD4_coeff_elec,
-        AD4_coeff_desolv,
-        out_tpc
-    );
-
-    job();
-#else
-    // Run graph
-    const auto result = intraE_graph(
-        ScalarDataSource<uint32_t>(myligand->num_of_atoms),
-        memBuffer(intraE_contributors_buf),
-        memBuffer(atom_idxyzq_buf),
-        memBuffer(is_hbond_lut_buf),
-        RuntimeMemoryBuffer(std::span<const double>(myligand->volume, g_maxNumAtomTypes)),
-        RuntimeMemoryBuffer(std::span<const double>(myligand->solpar, g_maxNumAtomTypes)),
-        memBuffer(vwpars_a_buf),
-        memBuffer(vwpars_b_buf),
-        memBuffer(vwpars_c_buf),
-        memBuffer(vwpars_d_buf),
-        ScalarDataSource<double>(dcutoff),
-        ScalarDataSource<double>(qasp),
-        ScalarDataSource<double>(scaled_AD4_coeff_elec),
-        ScalarDataSource<double>(AD4_coeff_desolv),
-        memBuffer(out_buf)
-    );
-
-    // Warn about deadlocks
-    result.dump(std::cerr);
-#endif
-
-    return vW + el + (ignore_desolv ? 0.0 : desolv);
+    for (uint32_t atom_idx = 0; atom_idx < num_atoms; ++atom_idx) {
+#pragma HLS unroll off
+        for (uint32_t i = 0; i < 5; ++i) {
+#pragma HLS unroll off
+            double val = co_await atom_idxyzq_in.get();
+            if (i >= 1 && i < 4) {
+                val *= scale_factor;
+            }
+            co_await atom_idxyzq_out.put(val);
+        }
+    }
 }
 
 static void dumpStructRaw(const char *fileName, const char *data, size_t size) {
@@ -649,33 +517,7 @@ static void dumpJson(const char *fileName, const nlohmann::json& json) {
 }
 
 double calc_intraE(const Liganddata* myligand, double dcutoff, char ignore_desolv, const double scaled_AD4_coeff_elec, const double AD4_coeff_desolv, const double qasp, int debug) {
-    const double originalResult = calc_intraE_original(myligand, dcutoff, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp, debug);
-    const double graphResult    = calc_intraE_graphtoy(myligand, dcutoff, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp);
-
-    const double absTolerance = s_intraE_tolerance_rel * std::fabs(originalResult);
-    const double diff = std::fabs(originalResult - graphResult);
-
-    if (diff > absTolerance) {
-        std::cerr << "IntraE mismatch: original=" << originalResult << ", graph=" << graphResult << "\n";
-    }
-
-    if (g_graphdumpsEnabled) {
-        static uint32_t s_dumpIndex = 0;
-        std::string baseName = g_dumpDirectory + "/intraE_" + std::to_string(s_dumpIndex++);
-
-        dumpLigand((baseName + "_ligand.bin").data(), myligand);
-
-        nlohmann::json params{};
-        params["dcutoff"] = dcutoff;
-        params["ignore_desolv"] = bool(ignore_desolv);
-        params["scaled_AD4_coeff_elec"] = scaled_AD4_coeff_elec;
-        params["AD4_coeff_desolv"] = AD4_coeff_desolv;
-        params["qasp"] = qasp;
-        params["result"] = graphResult;
-        dumpJson((baseName + "_params.json").data(), params);
-    }
-
-    return graphResult;
+    return calc_intraE_original(myligand, dcutoff, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp, debug);
 }
 
 
@@ -1082,222 +924,19 @@ static constexpr void build_interE_core(
     );
 }
 
-COMPUTE_GRAPH constexpr auto interE_graph = make_compute_graph_v<[] (
-    IoConnector<uint32_t> num_atoms_in,
-    IoConnector<double> outofgrid_tolerance_in,
-    IoConnector<int> grid_size_x_in,
-    IoConnector<int> grid_size_y_in,
-    IoConnector<int> grid_size_z_in,
-    IoConnector<int> num_of_atypes_in,
-    IoConnector<bool> enable_peratom_outputs_in,
-    IoConnector<const double> atom_idxyzq_buf,
-    IoConnector<const double> grid_buf,
-    IoConnector<double> peratom_vdw_buf,
-    IoConnector<double> peratom_elec_buf,
-    IoConnector<double> scalar_out_buf
-) {
-    IoConnector<double> atom_idxyzq_stream;
-
-    CGSIM_AUTO_NAME(num_atoms_in);
-    CGSIM_AUTO_NAME(outofgrid_tolerance_in);
-    CGSIM_AUTO_NAME(grid_size_x_in);
-    CGSIM_AUTO_NAME(grid_size_y_in);
-    CGSIM_AUTO_NAME(grid_size_z_in);
-    CGSIM_AUTO_NAME(num_of_atypes_in);
-    CGSIM_AUTO_NAME(enable_peratom_outputs_in);
-    CGSIM_AUTO_NAME(atom_idxyzq_buf);
-    CGSIM_AUTO_NAME(grid_buf);
-    CGSIM_AUTO_NAME(peratom_vdw_buf);
-    CGSIM_AUTO_NAME(peratom_elec_buf);
-    CGSIM_AUTO_NAME(scalar_out_buf);
-
-    kernel_StreamAtomIdxyzq(
-        num_atoms_in,
-        atom_idxyzq_buf,
-        atom_idxyzq_stream
-    );
-
-    build_interE_core(
-        num_atoms_in,
-        outofgrid_tolerance_in,
-        grid_size_x_in,
-        grid_size_y_in,
-        grid_size_z_in,
-        num_of_atypes_in,
-        enable_peratom_outputs_in,
-        atom_idxyzq_stream,
-        grid_buf,
-        peratom_vdw_buf,
-        peratom_elec_buf,
-        scalar_out_buf
-    );
-
-    return std::tuple();
-}>;
-
-
-struct InterE_Result {
-    double m_interE = 0;
-    double m_elecE = 0;
-    
-    std::vector<double> m_peratomVdW{};
-    std::vector<double> m_peratomElec{};
-};
-
 static auto getNumGridElems(const Gridinfo *mygrid) {
     const auto& gridsize = mygrid->size_xyz;
     return (mygrid->num_of_atypes + 2) * gridsize[0] * gridsize[1] * gridsize[2];
 }
 
-InterE_Result calc_interE_graphtoy(const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance, bool enablePerAtomOutputs) {
-    // Copy 2D buffers into local (flat) ones
-    static_assert(sizeof(myligand->atom_idxyzq) == (g_maxNumAtoms * 5 * sizeof(double)));
-    std::vector<double> atom_idxyzq_buf(g_maxNumAtoms * 5);
-    std::memcpy(atom_idxyzq_buf.data(), myligand->atom_idxyzq, sizeof(myligand->atom_idxyzq));
-
-    const auto numGridMemElems = getNumGridElems(mygrid);
-    std::span<const double> gridMemoryRegion{fgrids, size_t(numGridMemElems)};
-
-    // Output buffers
-    std::vector<double> peratom_vdw_buf{1, 0.0};
-    std::vector<double> peratom_elec_buf{1, 0.0};
-    if (enablePerAtomOutputs) {
-        peratom_vdw_buf.resize(myligand->num_of_atoms);
-        peratom_elec_buf.resize(myligand->num_of_atoms);
-    }
-
-    // Run graph
-    std::vector<double> out_buf(2, 0.0); // interE, elecE
-    double& interE = out_buf[0];
-    double& elecE  = out_buf[1];
-
-#ifdef HAVE_TAPASCO
-    auto& tpc = get_tapasco();
-    const auto peid = get_tapasco_pe(s_tpc_vlnv_interE);
-
-    auto atom_idxyzq_tpc = tapasco_inbuf<double>(atom_idxyzq_buf);
-    auto grid_tpc = tapasco_inbuf<double>(gridMemoryRegion);
-    auto peratom_vdw_tpc = tapasco_outbuf<double>(peratom_vdw_buf);
-    auto peratom_elec_tpc = tapasco_outbuf<double>(peratom_elec_buf);
-    auto out_tpc = tapasco_outbuf<double>(out_buf);
-
-    auto job = tpc.launch(peid,
-        myligand->num_of_atoms,
-        outofgrid_tolerance,
-        mygrid->size_xyz[0],
-        mygrid->size_xyz[1],
-        mygrid->size_xyz[2],
-        myligand->num_of_atypes,
-        uint32_t(enablePerAtomOutputs),
-        atom_idxyzq_tpc,
-        grid_tpc,
-        peratom_vdw_tpc,
-        peratom_elec_tpc,
-        out_tpc
-    );
-
-    job();
-#else
-    const auto result = interE_graph(
-        ScalarDataSource<uint32_t>(myligand->num_of_atoms),
-        ScalarDataSource<double>(outofgrid_tolerance),
-        ScalarDataSource<int>(mygrid->size_xyz[0]),
-        ScalarDataSource<int>(mygrid->size_xyz[1]),
-        ScalarDataSource<int>(mygrid->size_xyz[2]),
-        ScalarDataSource<int>(myligand->num_of_atypes),
-        ScalarDataSource<bool>(enablePerAtomOutputs),
-        memBuffer(atom_idxyzq_buf),
-        RuntimeMemoryBuffer(gridMemoryRegion),
-        memBuffer(peratom_vdw_buf),
-        memBuffer(peratom_elec_buf),
-        memBuffer(out_buf)
-    );
-
-    result.dump(std::cerr);
-#endif
-
-    return {
-        .m_interE = interE,
-        .m_elecE = elecE,
-        .m_peratomVdW = std::move(peratom_vdw_buf),
-        .m_peratomElec = std::move(peratom_elec_buf)
-    };
-}
-
 double calc_interE(const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance, int debug) {
-    const double originalResult = calc_interE_original(mygrid, myligand, fgrids, outofgrid_tolerance, debug);
-    const double graphResult = calc_interE_graphtoy(mygrid, myligand, fgrids, outofgrid_tolerance, false).m_interE;
-
-    const double absTolerance = s_interE_tolerance_rel * std::fabs(originalResult);
-    const double diff = std::fabs(originalResult - graphResult);
-
-    if (diff > absTolerance) {
-        std::cerr << "InterE mismatch: original=" << originalResult << " graph=" << graphResult << "\n";
-    }
-
-    if (g_graphdumpsEnabled) {
-        static uint32_t s_dumpIndex = 0;
-        const std::string baseNameNoIndex = g_dumpDirectory + "/interE_";
-        const std::string baseName = baseNameNoIndex + std::to_string(s_dumpIndex++);
-
-        dumpLigand((baseName + "_ligand.bin").data(), myligand);
-
-        static bool s_gridDumped = false;
-        if (!s_gridDumped) {
-            s_gridDumped = true;
-            const auto numGridMemElems = getNumGridElems(mygrid);
-            dumpStructRaw((baseNameNoIndex + "grid.bin").data(), (const char *)fgrids, numGridMemElems * sizeof(fgrids[0]));
-        }
-
-        const auto& gridsize = mygrid->size_xyz;
-
-        nlohmann::json params{};
-        params["outofgrid_tolerance"] = outofgrid_tolerance;
-        params["gridsize_x"] = gridsize[0];
-        params["gridsize_y"] = gridsize[1];
-        params["gridsize_z"] = gridsize[2];
-        params["result"] = graphResult;
-        dumpJson((baseName + "_params.json").data(), params);
-    }
-
-    return graphResult;
+    return calc_interE_original(mygrid, myligand, fgrids, outofgrid_tolerance, debug);
 }
 
 void calc_interE_peratom(const Gridinfo* mygrid, const Liganddata* myligand, const double* fgrids, double outofgrid_tolerance,
                          double* elecE, double peratom_vdw [256], double peratom_elec [256], int debug)
 {
     calc_interE_peratom_original(mygrid, myligand, fgrids, outofgrid_tolerance, elecE, peratom_vdw, peratom_elec, debug);
-    const auto graphResult = calc_interE_graphtoy(mygrid, myligand, fgrids, outofgrid_tolerance, true);
-    
-    const auto num_atoms = size_t(myligand->num_of_atoms);
-
-    if (graphResult.m_peratomVdW.size() != num_atoms || graphResult.m_peratomElec.size() != num_atoms) {
-        std::cerr << "InterE per-atom output size mismatch: expected " << num_atoms
-                  << ", got " << graphResult.m_peratomVdW.size() << " vdw and "
-                  << graphResult.m_peratomElec.size() << " elec\n";
-        return;
-    }
-
-    const auto check_peratom = [](const std::vector<double>& graphValues, const double* originalValues) {
-        for (size_t i = 0; i < graphValues.size(); ++i) {
-            const double originalValue = originalValues[i];
-            const double graphValue = graphValues[i];
-
-            const double absTolerance = s_interE_tolerance_rel * std::fabs(originalValue);
-            const double diff = std::fabs(originalValue - graphValue);
-
-            if (diff > absTolerance) return true;
-        }
-        return false;
-    };
-
-    if (check_peratom(graphResult.m_peratomVdW, peratom_vdw)) {
-        std::cerr << "InterE per-atom VdW mismatch\n";
-    }
-
-    if (check_peratom(graphResult.m_peratomElec, peratom_elec)) {
-        std::cerr << "InterE per-atom Elec mismatch\n";
-    }
 }
 
 
@@ -1562,7 +1201,8 @@ static constexpr IoConnector<double> build_changeConform_core(
     return atom_idxyzq_stream;
 }
 
-COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
+COMPUTE_GRAPH constexpr auto intra_interE_uber_graph = make_compute_graph_v<[] (
+    // ChangeConform inputs
     IoConnector<uint32_t> num_atoms_in,
     IoConnector<uint32_t> num_rotbonds_in,
     IoConnector<double> initial_move_x_in,
@@ -1573,8 +1213,37 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
     IoConnector<const double> rotbonds_moving_vectors_buf,
     IoConnector<const double> rotbonds_unit_vectors_buf,
     IoConnector<const double> genotype_buf,
-    IoConnector<double> output_buf
+
+    // InterE inputs
+    IoConnector<double> outofgrid_tolerance_in,
+    IoConnector<int> grid_size_x_in,
+    IoConnector<int> grid_size_y_in,
+    IoConnector<int> grid_size_z_in,
+    IoConnector<int> num_of_atypes_in,
+    IoConnector<bool> enable_peratom_outputs_in,
+    IoConnector<const double> grid_buf,
+    IoConnector<double> peratom_vdw_buf,
+    IoConnector<double> peratom_elec_buf,
+    IoConnector<double> interE_scalar_out_buf,
+
+    // IntraE inputs
+    IoConnector<double> scale_factor_in,
+    IoConnector<const char> intraE_contributors_buf,
+    IoConnector<const char> is_hbond_lut_buf,
+    IoConnector<const double> volume_buf,
+    IoConnector<const double> solpar_buf,
+    IoConnector<const double> vwpars_a_buf,
+    IoConnector<const double> vwpars_b_buf,
+    IoConnector<const double> vwpars_c_buf,
+    IoConnector<const double> vwpars_d_buf,
+    IoConnector<double> dcutoff_in,
+    IoConnector<double> qasp_in,
+    IoConnector<double> scaled_AD4_coeff_elec_in,
+    IoConnector<double> AD4_coeff_desolv_in,
+    IoConnector<double> intraE_out_buf
 ) {
+    IoConnector<double> atom_idxyzq_stream_scaled;
+
     CGSIM_AUTO_NAME(num_atoms_in);
     CGSIM_AUTO_NAME(num_rotbonds_in);
     CGSIM_AUTO_NAME(initial_move_x_in);
@@ -1585,7 +1254,32 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
     CGSIM_AUTO_NAME(rotbonds_moving_vectors_buf);
     CGSIM_AUTO_NAME(rotbonds_unit_vectors_buf);
     CGSIM_AUTO_NAME(genotype_buf);
-    CGSIM_AUTO_NAME(output_buf);
+
+    CGSIM_AUTO_NAME(outofgrid_tolerance_in);
+    CGSIM_AUTO_NAME(grid_size_x_in);
+    CGSIM_AUTO_NAME(grid_size_y_in);
+    CGSIM_AUTO_NAME(grid_size_z_in);
+    CGSIM_AUTO_NAME(num_of_atypes_in);
+    CGSIM_AUTO_NAME(enable_peratom_outputs_in);
+    CGSIM_AUTO_NAME(grid_buf);
+    CGSIM_AUTO_NAME(peratom_vdw_buf);
+    CGSIM_AUTO_NAME(peratom_elec_buf);
+    CGSIM_AUTO_NAME(interE_scalar_out_buf);
+
+    CGSIM_AUTO_NAME(scale_factor_in);
+    CGSIM_AUTO_NAME(intraE_contributors_buf);
+    CGSIM_AUTO_NAME(is_hbond_lut_buf);
+    CGSIM_AUTO_NAME(volume_buf);
+    CGSIM_AUTO_NAME(solpar_buf);
+    CGSIM_AUTO_NAME(vwpars_a_buf);
+    CGSIM_AUTO_NAME(vwpars_b_buf);
+    CGSIM_AUTO_NAME(vwpars_c_buf);
+    CGSIM_AUTO_NAME(vwpars_d_buf);
+    CGSIM_AUTO_NAME(dcutoff_in);
+    CGSIM_AUTO_NAME(qasp_in);
+    CGSIM_AUTO_NAME(scaled_AD4_coeff_elec_in);
+    CGSIM_AUTO_NAME(AD4_coeff_desolv_in);
+    CGSIM_AUTO_NAME(intraE_out_buf);
 
     const auto atom_idxyzq_stream = build_changeConform_core(
         num_atoms_in,
@@ -1600,163 +1294,160 @@ COMPUTE_GRAPH constexpr auto changeConform_graph = make_compute_graph_v<[] (
         genotype_buf
     );
 
-    kernel_ChangeConform_WriteAtomsToMemory(
+    // Only IntraE uses scaled coordinates.
+    kernel_ScaleLigandAtomIdxyzq(
         num_atoms_in,
+        scale_factor_in,
         atom_idxyzq_stream,
-        output_buf
+        atom_idxyzq_stream_scaled
+    );
+
+    build_interE_core(
+        num_atoms_in,
+        outofgrid_tolerance_in,
+        grid_size_x_in,
+        grid_size_y_in,
+        grid_size_z_in,
+        num_of_atypes_in,
+        enable_peratom_outputs_in,
+        atom_idxyzq_stream,
+        grid_buf,
+        peratom_vdw_buf,
+        peratom_elec_buf,
+        interE_scalar_out_buf
+    );
+
+    build_intraE_core(
+        num_atoms_in,
+        intraE_contributors_buf,
+        atom_idxyzq_stream_scaled,
+        is_hbond_lut_buf,
+        volume_buf,
+        solpar_buf,
+        vwpars_a_buf,
+        vwpars_b_buf,
+        vwpars_c_buf,
+        vwpars_d_buf,
+        dcutoff_in,
+        qasp_in,
+        scaled_AD4_coeff_elec_in,
+        AD4_coeff_desolv_in,
+        intraE_out_buf
     );
 
     return std::tuple();
 }>;
 
+extern "C" void eval_intra_interE_for_genotype_graphtoy(
+    const Liganddata* myligand_ref_ori,
+    const double* genotype,
+    const Gridinfo* myginfo,
+    const double* grids,
+    double interE_smooth,
+    int intraE_num_of_evals,
+    int ignore_desolv,
+    double scaled_AD4_coeff_elec,
+    double AD4_coeff_desolv,
+    double qasp,
+    int debug,
+    double* out_intra_inter /* out[0]=intraE, out[1]=interE */
+) {
+    (void)debug;
 
-static auto change_conform_graphtoy(const Liganddata* myligand, const double genotype []) {
-    // Copy 2D buffers into local (flat) ones
-    static_assert(sizeof(myligand->atom_idxyzq) == (g_maxNumAtoms * 5 * sizeof(double)));
-    std::vector<double> atom_idxyzq_buf(g_maxNumAtoms * 5);
-    std::memcpy(atom_idxyzq_buf.data(), myligand->atom_idxyzq, sizeof(myligand->atom_idxyzq));
+    // Build required derived buffers
+    auto is_hbond_lut_buf = intraE_build_hbond_lut(myligand_ref_ori);
 
-    static_assert(sizeof(myligand->atom_rotbonds) == (g_maxNumAtoms * g_maxNumRotbonds * sizeof(char)));
-    std::vector<char> atom_rotbonds_buf(g_maxNumAtoms * g_maxNumRotbonds);
-    std::memcpy(atom_rotbonds_buf.data(), myligand->atom_rotbonds, sizeof(myligand->atom_rotbonds));
+    // InterE outputs (per-atom disabled here)
+    std::vector<double> peratom_vdw_buf{1, 0.0};
+    std::vector<double> peratom_elec_buf{1, 0.0};
+    std::vector<double> interE_out_buf(2, 0.0); // interE, elecE
 
-    static_assert(sizeof(myligand->rotbonds_moving_vectors) == (g_maxNumRotbonds * 3 * sizeof(double)));
-    std::vector<double> rotbonds_moving_vectors_buf(g_maxNumRotbonds * 3);
-    std::memcpy(rotbonds_moving_vectors_buf.data(), myligand->rotbonds_moving_vectors, sizeof(myligand->rotbonds_moving_vectors));
+    // IntraE outputs
+    std::vector<double> intraE_out_buf(3, 0.0); // vW, el, desolv
 
-    static_assert(sizeof(myligand->rotbonds_unit_vectors) == (g_maxNumRotbonds * 3 * sizeof(double)));
-    std::vector<double> rotbonds_unit_vectors_buf(g_maxNumRotbonds * 3);
-    std::memcpy(rotbonds_unit_vectors_buf.data(), myligand->rotbonds_unit_vectors, sizeof(myligand->rotbonds_unit_vectors));
-
-    // Output buffer
-    std::vector<double> output_buf(g_maxNumAtoms * 5);
-
-    // Compute initial move to origo
+    // Initial move-to-origin for ChangeConform
     double initial_move_xyz[3];
-    get_movvec_to_origo(myligand, initial_move_xyz);
+    get_movvec_to_origo(myligand_ref_ori, initial_move_xyz);
 
-    const auto genotype_span = std::span<const double>(genotype, 6 + myligand->num_of_rotbonds);
+    const auto numGridMemElems = getNumGridElems(myginfo);
+    std::span<const double> gridMemoryRegion{grids, size_t(numGridMemElems)};
+
+    const auto genotype_span = std::span<const double>(genotype, size_t(6 + myligand_ref_ori->num_of_rotbonds));
+
+    const auto atom_idxyzq_span = std::span<const double>(&myligand_ref_ori->atom_idxyzq[0][0], size_t(g_maxNumAtoms * 5));
+    const auto atom_rotbonds_span = std::span<const char>(&myligand_ref_ori->atom_rotbonds[0][0], size_t(g_maxNumAtoms * g_maxNumRotbonds));
+    const auto intraE_contributors_span = std::span<const char>(&myligand_ref_ori->intraE_contributors[0][0], size_t(g_maxNumAtoms * g_maxNumAtoms));
+    const auto vwpars_a_span = std::span<const double>(&myligand_ref_ori->VWpars_A[0][0], size_t(g_maxNumAtomTypes * g_maxNumAtomTypes));
+    const auto vwpars_b_span = std::span<const double>(&myligand_ref_ori->VWpars_B[0][0], size_t(g_maxNumAtomTypes * g_maxNumAtomTypes));
+    const auto vwpars_c_span = std::span<const double>(&myligand_ref_ori->VWpars_C[0][0], size_t(g_maxNumAtomTypes * g_maxNumAtomTypes));
+    const auto vwpars_d_span = std::span<const double>(&myligand_ref_ori->VWpars_D[0][0], size_t(g_maxNumAtomTypes * g_maxNumAtomTypes));
+
+    const auto rotbonds_moving_vectors_span = std::span<const double>(&myligand_ref_ori->rotbonds_moving_vectors[0][0], size_t(g_maxNumRotbonds * 3));
+    const auto rotbonds_unit_vectors_span = std::span<const double>(&myligand_ref_ori->rotbonds_unit_vectors[0][0], size_t(g_maxNumRotbonds * 3));
 
 #ifdef HAVE_TAPASCO
-    auto& tpc = get_tapasco();
-    const auto peid = get_tapasco_pe(s_tpc_vlnv_changeConform);
-
-    auto atom_idxyzq_tpc = tapasco_inbuf<double>(atom_idxyzq_buf);
-    auto atom_rotbonds_tpc = tapasco_inbuf<char>(atom_rotbonds_buf);
-    auto rotbonds_moving_vectors_tpc = tapasco_inbuf<double>(rotbonds_moving_vectors_buf);
-    auto rotbonds_unit_vectors_tpc = tapasco_inbuf<double>(rotbonds_unit_vectors_buf);
-    auto genotype_tpc = tapasco_inbuf<double>(genotype_span);
-    auto output_tpc = tapasco_outbuf<double>(output_buf);
-
-    auto job = tpc.launch(peid,
-        myligand->num_of_atoms,
-        myligand->num_of_rotbonds,
-        initial_move_xyz[0],
-        initial_move_xyz[1],
-        initial_move_xyz[2],
-        atom_idxyzq_tpc,
-        atom_rotbonds_tpc,
-        rotbonds_moving_vectors_tpc,
-        rotbonds_unit_vectors_tpc,
-        genotype_tpc,
-        output_tpc
-    );
-
-    job();
+    // TaPaSCo backend for the uber-graph isn't wired up yet.
+    // Fall back to the existing separate kernels/graphs.
+    Liganddata myligand_temp = *myligand_ref_ori;
+    change_conform(&myligand_temp, genotype, debug);
+    out_intra_inter[1] = calc_interE(myginfo, &myligand_temp, grids, interE_smooth, debug);
+    scale_ligand(&myligand_temp, myginfo->spacing);
+    out_intra_inter[0] = calc_intraE(&myligand_temp, intraE_num_of_evals, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp, debug);
+    return;
 #else
-    // Run graph
-    const auto result = changeConform_graph(
-        ScalarDataSource<uint32_t>(myligand->num_of_atoms),
-        ScalarDataSource<uint32_t>(myligand->num_of_rotbonds),
+    const auto result = intra_interE_uber_graph(
+        ScalarDataSource<uint32_t>(myligand_ref_ori->num_of_atoms),
+        ScalarDataSource<uint32_t>(myligand_ref_ori->num_of_rotbonds),
         ScalarDataSource<double>(initial_move_xyz[0]),
         ScalarDataSource<double>(initial_move_xyz[1]),
         ScalarDataSource<double>(initial_move_xyz[2]),
-        memBuffer(atom_idxyzq_buf),
-        memBuffer(atom_rotbonds_buf),
-        memBuffer(rotbonds_moving_vectors_buf),
-        memBuffer(rotbonds_unit_vectors_buf),
+        RuntimeMemoryBuffer(atom_idxyzq_span),
+        RuntimeMemoryBuffer(atom_rotbonds_span),
+        RuntimeMemoryBuffer(rotbonds_moving_vectors_span),
+        RuntimeMemoryBuffer(rotbonds_unit_vectors_span),
         RuntimeMemoryBuffer(genotype_span),
-        memBuffer(output_buf)
+
+        ScalarDataSource<double>(interE_smooth),
+        ScalarDataSource<int>(myginfo->size_xyz[0]),
+        ScalarDataSource<int>(myginfo->size_xyz[1]),
+        ScalarDataSource<int>(myginfo->size_xyz[2]),
+        ScalarDataSource<int>(myligand_ref_ori->num_of_atypes),
+        ScalarDataSource<bool>(false),
+        RuntimeMemoryBuffer(gridMemoryRegion),
+        memBuffer(peratom_vdw_buf),
+        memBuffer(peratom_elec_buf),
+        memBuffer(interE_out_buf),
+
+        ScalarDataSource<double>(myginfo->spacing),
+        RuntimeMemoryBuffer(intraE_contributors_span),
+        memBuffer(is_hbond_lut_buf),
+        RuntimeMemoryBuffer(std::span<const double>(myligand_ref_ori->volume, g_maxNumAtomTypes)),
+        RuntimeMemoryBuffer(std::span<const double>(myligand_ref_ori->solpar, g_maxNumAtomTypes)),
+        RuntimeMemoryBuffer(vwpars_a_span),
+        RuntimeMemoryBuffer(vwpars_b_span),
+        RuntimeMemoryBuffer(vwpars_c_span),
+        RuntimeMemoryBuffer(vwpars_d_span),
+        ScalarDataSource<double>(double(intraE_num_of_evals)),
+        ScalarDataSource<double>(qasp),
+        ScalarDataSource<double>(scaled_AD4_coeff_elec),
+        ScalarDataSource<double>(AD4_coeff_desolv),
+        memBuffer(intraE_out_buf)
     );
 
+    // Warn about deadlocks
     result.dump(std::cerr);
+
+    const double vW = intraE_out_buf[0];
+    const double el = intraE_out_buf[1];
+    const double desolv = intraE_out_buf[2];
+
+    out_intra_inter[1] = interE_out_buf[0];
+    out_intra_inter[0] = vW + el + (ignore_desolv ? 0.0 : desolv);
 #endif
-
-    // Reorder result
-    std::vector<InterE_AtomInput> output_buf_struct(myligand->num_of_atoms);
-    static_assert(sizeof(output_buf_struct[0]) == 5 * sizeof(double));
-    std::memcpy(output_buf_struct.data(), output_buf.data(), output_buf_struct.size() * sizeof(InterE_AtomInput));
-
-    return output_buf_struct;
-}
-
-static double change_conform_ligand_size(const Liganddata* myligand) {
-    double min_xyz[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max()};
-    double max_xyz[3] = {std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest()};
-
-    for (size_t i = 0; i < myligand->num_of_atoms; ++i) {
-        const double* atom_xyz = &myligand->atom_idxyzq[i][1];
-
-        for (size_t j = 0; j < 3; ++j) {
-            min_xyz[j] = std::min(min_xyz[j], atom_xyz[j]);
-            max_xyz[j] = std::max(max_xyz[j], atom_xyz[j]);
-        }
-    }
-
-    double max_size = 0;
-    for (size_t j = 0; j < 3; ++j) {
-        max_size = std::max(max_size, max_xyz[j] - min_xyz[j]);
-    }
-
-    return max_size;
 }
 
 void change_conform(Liganddata* myligand, const double genotype [], int debug) {
-    std::unique_ptr<Liganddata> originalLigand = nullptr;
-    if (g_graphdumpsEnabled) {
-        originalLigand = std::make_unique<Liganddata>(*myligand);
-    }
-
-    const auto graphResult = change_conform_graphtoy(myligand, genotype);
     change_conform_original(myligand, genotype, debug);
-
-    static_assert(sizeof(InterE_AtomInput) == sizeof(InterE_RawAtomInput));
-#ifndef __clang__
-    static_assert(std::is_pointer_interconvertible_with_class(&InterE_AtomInput::m_atom_idxyzq));
-#endif
-
-    double max_deviation = 0;
-    bool id_q_okay = true;
-    for (size_t i = 0; i < graphResult.size(); ++i) {
-        const auto& a = graphResult[i];
-        const auto& b = myligand->atom_idxyzq[i];
-
-        double xyz_dist = distance(&a.m_atom_idxyzq[1], &b[1]);
-        max_deviation = std::max(max_deviation, xyz_dist);
-
-        if (a.m_atom_idxyzq[0] != b[0] || a.m_atom_idxyzq[4] != b[4]) {
-            id_q_okay = false;
-        }
-    }
-
-    const double ligand_size = change_conform_ligand_size(myligand);
-    if (ligand_size > 0) {
-        max_deviation /= ligand_size;
-    }
-
-    if ((max_deviation > s_changeConform_tolerance_rel) || !id_q_okay) {
-        std::cerr << "ChangeConform mismatch: max deviation rel=" << max_deviation
-                  << ", id/q match=" << (id_q_okay ? "yes" : "no") << "\n";
-    }
-
-    if (g_graphdumpsEnabled) {
-        static uint32_t s_dumpIndex = 0;
-        const std::string baseName = g_dumpDirectory + "/change_conform_" + std::to_string(s_dumpIndex++);
-
-        dumpLigand((baseName + "_ligand_original.bin").data(), originalLigand.get());
-        dumpLigand((baseName + "_ligand_rotated.bin").data(), myligand);
-        dumpStructRaw((baseName + "_genotype.bin").data(), (const char *)genotype, (6 + myligand->num_of_rotbonds) * sizeof(double));
-    }
 }
 
 extern "C" void enable_graphdumps() {

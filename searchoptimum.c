@@ -9,6 +9,23 @@
 
 #include "searchoptimum.h"
 
+#include <stdlib.h>
+
+void eval_intra_interE_for_genotype_graphtoy(
+	const Liganddata* myligand_ref_ori,
+	const double* genotype,
+	const Gridinfo* myginfo,
+	const double* grids,
+	double interE_smooth,
+	int intraE_num_of_evals,
+	int ignore_desolv,
+	double scaled_AD4_coeff_elec,
+	double AD4_coeff_desolv,
+	double qasp,
+	int debug,
+	double* out_intra_inter /* out[0]=intraE, out[1]=interE */
+);
+
 static void eval_intra_interE_for_genotype(
 	const Liganddata* myligand_ref_ori,
 	const double* genotype,
@@ -30,6 +47,29 @@ static void eval_intra_interE_for_genotype(
 	out_intra_inter[1] = calc_interE(myginfo, &myligand_temp, grids, interE_smooth, debug);
 	scale_ligand(&myligand_temp, myginfo->spacing);
 	out_intra_inter[0] = calc_intraE(&myligand_temp, intraE_num_of_evals, ignore_desolv, scaled_AD4_coeff_elec, AD4_coeff_desolv, qasp, debug);
+
+	double graph_out[2] = {0.0, 0.0};
+	eval_intra_interE_for_genotype_graphtoy(
+		myligand_ref_ori,
+		genotype,
+		myginfo,
+		grids,
+		interE_smooth,
+		intraE_num_of_evals,
+		ignore_desolv,
+		scaled_AD4_coeff_elec,
+		AD4_coeff_desolv,
+		qasp,
+		debug,
+		graph_out
+	);
+
+	// Make sure the results match exactly.
+	if (out_intra_inter[0] != graph_out[0] || out_intra_inter[1] != graph_out[1] || isnan(graph_out[0]) || isnan(graph_out[1])) {
+		fprintf(stderr, "Warning: mismatch between original and graphtoy intra/inter E calculations!\n");
+		fprintf(stderr, "  Original intraE: %lf, interE: %lf\n", out_intra_inter[0], out_intra_inter[1]);
+		fprintf(stderr, "  Graphtoy  intraE: %lf, interE: %lf\n", graph_out[0], graph_out[1]);
+	}
 }
 
 void map_angle(double* angle, double ang_max)

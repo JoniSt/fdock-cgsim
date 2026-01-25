@@ -131,7 +131,6 @@ void calc_q_tables(const Liganddata*, double [][256], double [], const double);
 
 double calc_intraE         (const Liganddata*, double, char, const double, const double, const double, int);
 double calc_intraE_original(const Liganddata*, double, char, const double, const double, const double, int);
-double calc_intraE_graphtoy(const Liganddata*, double, char, const double, const double, const double);
 
 double calc_interE         (const Gridinfo*, const Liganddata*, const double*, double, int);
 double calc_interE_original(const Gridinfo*, const Liganddata*, const double*, double, int);
